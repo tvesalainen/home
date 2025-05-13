@@ -43,16 +43,18 @@ public class LightController extends LoggingCommandLine
         lc.command(args);
         JavaLogging log = JavaLogging.getLogger(LightController.class);
         Path configfile = lc.getArgument("configuration file");
-        try
+        while (true)
         {
-            StateManager sm = new StateManager(configfile);
-            sm.start();
-        }
-        catch (IOException ex)
-        {
-            ex.printStackTrace();
-            log.log(Level.SEVERE, ex, "command-line %s", ex.getMessage());
-            System.exit(2);
+            try
+            {
+                EventManager em = new EventManager(configfile);
+                em.start();
+            }
+            catch (IOException ex)
+            {
+                ex.printStackTrace();
+                log.log(Level.SEVERE, ex, "command-line %s", ex.getMessage());
+            }
         }
     }
 }

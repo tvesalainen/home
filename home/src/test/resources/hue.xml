@@ -1,56 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <hue>
-    <state name="base">
-        <update name="Sockets">
-            /on/on:true
-        </update>
-        <update name="Humifier">
-            /on/on:true
-        </update>
-        <exitPoint name="BedLightsroom motion" enter="sleeping"/>
-        <exitPoint name="Living room group" enter="reading" />
-        <exitPoint name="Hallway motion" enter="away" />
-        <event>
-            <on key="/motion/motion_report/motion" eq="true">
-                <update name="Living room">
-                    /on/on:true
-                </update>
-            </on>
-            <on key="/motion/motion_report/motion" eq="false" delay="300">
-                <update name="Living room">
-                    /on/on:false
-                </update>
-            </on>
-        </event>
-    </state>
-    <state name="reading">
-        <event>
-            <on key="/motion/motion_report/motion" eq="true" action="exit"/>
-        </event>
-    </state>
-    <state name="sleeping">
-        <update name="Lights">
-            /on/on:false
-        </update>
-        <event>
-            <on key="/motion/motion" eq="true" action="exit"/>
-        </event>
-    </state>
-    <state name="away">
-        <update name="Lights">
-            /on/on:false
-        </update>
-        <update name="Sockets">
-            /on/on:false
-        </update>
-        <update name="Humifier">
-            /on/on:false
-        </update>
-        <event>
-            <on key="/motion/motion" eq="true" action="exit"/>
-        </event>
-        <event>
-            <on key="/motion/motion_report/motion" eq="true" action="exit"/>
-        </event>
-    </state>
+    <motions>
+        <enter>
+            <device name="Sockets" />
+            <device name="Humifier" />
+        </enter>
+        <motion name="Living room group">
+            <light name="Living room" />
+            <exit>
+                <light name="Living room" action="true"/>
+            </exit>
+        </motion>
+        <motion name="Bedroom motion">
+            <light name="Bedroom" />
+            <exit>
+                <device name="Lights" />
+            </exit>
+        </motion>
+        <motion name="Bathroom motion">
+            <light name="Bathroom" />
+        </motion>
+        <motion name="Hallway motion">
+            <light name="Hallway" />
+            <exit>
+                <light name="Lights" />
+                <device name="Sockets" />
+                <device name="Humifier" />
+            </exit>
+        </motion>
+    </motions>
 </hue>

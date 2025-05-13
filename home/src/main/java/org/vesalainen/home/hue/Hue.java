@@ -30,6 +30,7 @@ import static java.nio.charset.StandardCharsets.US_ASCII;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.X509Certificate;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -40,6 +41,7 @@ import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.prefs.Preferences;
+import java.util.stream.Collectors;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -155,6 +157,14 @@ public class Hue extends JavaLogging
         }
     }
 
+    public void checkName(String name)
+    {
+        List<Resource> list = getResources(name);
+        if (list.size() == 0)
+        {
+                throw new IllegalArgumentException(name+" not found");
+        }
+    }
     public List<Resource> getResources(String name)
     {
         return resources.getResources(name);
@@ -164,11 +174,11 @@ public class Hue extends JavaLogging
     {
         return resources.getResource(id);
     }
-    public void update(String name, Collection<String> upd) throws IOException
+    public void update(String name, Collection<String> upd)
     {
         update(name, JSON.build(upd));
     }
-    public void update(String name, String... upd) throws IOException
+    public void update(String name, String... upd)
     {
         update(name, JSON.build(upd));
     }
@@ -376,6 +386,45 @@ public class Hue extends JavaLogging
         Set<String> keySet = JSON.keySet(upd);
         update(name, (ks)->upd, (s)->s.containsAll(keySet));
     }
+    public Collection<Resource> getResource(String name, String... upd)
+    {
+        return getResource(name, JSON.build(upd));
+    }
+    public Collection<Resource> getResource(String name, JSONObject upd)
+    {
+        List<Resource> list = new ArrayList<>();
+        Set<String> updSet = JSON.keySet(upd);
+        for (Resource res : getResources(name))
+        {
+            getResources(res, updSet, list);
+        }
+        return list;
+    }
+    private void getResources(Resource res, Set<String> updSet, List<Resource> list)
+    {
+        if (res != null)
+        {
+            Set<String> keySet = res.keySet();
+            if (keySet.containsAll(updSet))
+            {
+                list.add(res);
+            }
+            else
+            {
+                for (Resource r : res.services())
+                {
+                    getResources(r, updSet, list);
+                }
+                if (list.isEmpty())
+                {
+                    for (Resource r : res.childrens())
+                    {
+                        getResources(r, updSet, list);
+                    }
+                }
+            }
+        }
+    }
     public void update(String name, Function<Set<String>,JSONObject> upd, Predicate<Set<String>> predicate)
     {
         info("update %s", name);
@@ -415,6 +464,17 @@ public class Hue extends JavaLogging
         return;
     }
 
+    public void update(Collection<Resource> res, String... upd)
+    {
+        update(res, JSON.build(upd));
+    }
+    public void update(Collection<Resource> res, JSONObject u)
+    {
+        for (Resource r : res)
+        {
+            update(r, u);
+        }
+    }
     public void update(Resource res, Collection<String>upd)
     {
         update(res, JSON.build(upd));
