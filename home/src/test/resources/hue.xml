@@ -1,5 +1,32 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <hue>
+    <lights>
+        <level>
+            <point time="00:00" value="10" />
+            <point time="03:00" value="10" />
+            <point time="06:00" value="30" />
+            <point time="09:00" value="80" />
+            <point time="12:00" value="100" />
+            <point time="15:00" value="80" />
+            <point time="18:00" value="30" />
+            <point time="21:00" value="10" />
+        </level>
+        <temperature>
+            <point time="00:00" value="500" />
+            <point time="03:00" value="500" />
+            <point time="06:00" value="300" />
+            <point time="09:00" value="200" />
+            <point time="12:00" value="150" />
+            <point time="15:00" value="200" />
+            <point time="18:00" value="300" />
+            <point time="21:00" value="500" />
+        </temperature>
+        <sensor name="Living room group" lightName="Living room" target="20000"/>
+        <sensor name="Bedroom motion" lightName="Bedroom" target="20000"/>
+        <sensor name="Bathroom motion" lightName="Bathroom" target="20000"/>
+        <sensor name="Hallway motion" lightName="Hallway" target="20000"/>
+        <controller name="Library" action="dim" target="Living room" value="50"/>
+    </lights>
     <motions>
         <enter>
             <device name="Sockets" />
@@ -8,7 +35,7 @@
         <motion name="Living room group">
             <light name="Living room" />
             <exit>
-                <light name="Living room" action="true"/>
+                <light name="Living room" action="reverse"/>
             </exit>
         </motion>
         <motion name="Bedroom motion">

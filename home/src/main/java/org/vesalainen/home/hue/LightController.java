@@ -50,7 +50,7 @@ public class LightController extends LoggingCommandLine
                 EventManager em = new EventManager(configfile);
                 em.start();
             }
-            catch (IOException ex)
+            catch (Exception ex)
             {
                 ex.printStackTrace();
                 log.log(Level.SEVERE, ex, "command-line %s", ex.getMessage());

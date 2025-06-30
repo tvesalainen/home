@@ -25,21 +25,16 @@ import java.lang.reflect.InvocationTargetException;
 import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import static java.nio.file.StandardWatchEventKinds.ENTRY_MODIFY;
-import java.nio.file.WatchKey;
-import java.nio.file.WatchService;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ScheduledFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import java.util.logging.Level;
-import static java.util.logging.Level.INFO;
-import static java.util.logging.Level.SEVERE;
-import java.util.logging.Logger;
+import java.util.prefs.Preferences;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONPointer;
@@ -47,6 +42,7 @@ import org.json.JSONPointerException;
 import org.json.XML;
 import org.vesalainen.home.hue.Resources.Resource;
 import org.vesalainen.math.LocalTimeCubicSpline;
+import org.vesalainen.util.ConvertUtility;
 import org.vesalainen.util.concurrent.CachedScheduledThreadPool;
 import org.vesalainen.util.logging.JavaLogging;
 
@@ -56,6 +52,11 @@ import org.vesalainen.util.logging.JavaLogging;
  */
 public class EventManager extends JavaLogging
 {
+    private static final int VERSION = 1;
+    private static final JSONPointer LIGHT_LEVEL = new JSONPointer("/light/light_level");
+    private static final JSONPointer GROUPED_LIGHT_LEVEL = new JSONPointer("/light/light_level_report/light_level");
+    private static final JSONPointer BRIGHTNESS = new JSONPointer("/dimming/brightness");
+    private static final JSONPointer ONON = new JSONPointer("/on/on");
     private static final JSONPointer RID = new JSONPointer("/owner/rid");
     private static JSONPointer MOTION = new JSONPointer("/motion/motion");
     private static JSONPointer GROUPED_MOTION = new JSONPointer("/motion/motion_report/motion");
@@ -63,40 +64,18 @@ public class EventManager extends JavaLogging
     private static JSONObject OFF = JSON.build("/on/on", false).get();
     private Hue hue;
     private String start;
-    private WatchService watchService;
     private Path path;
     private CachedScheduledThreadPool pool = new CachedScheduledThreadPool();
     private HueManager hueManager;
-    private LocalTimeCubicSpline mirek;
-    private LocalTimeCubicSpline brightness;
+    private Map<String,Device> deviceMap = new HashMap<>();
+    private Map<String,Sensor> sensorMap = new HashMap<>();
+    private Map<String,Sensor> sensorLightMap = new HashMap<>();
 
     public EventManager(Path path) throws IOException
     {
         super(EventManager.class);
         this.path = path;
         FileSystem fileSystem = path.getFileSystem();
-        this.watchService = fileSystem.newWatchService();
-        path.getParent().register(watchService, ENTRY_MODIFY);
-        this.brightness = LocalTimeCubicSpline.builder()
-                .add(LocalTime.of(3, 0), 10)
-                .add(LocalTime.of(6, 0), 30)
-                .add(LocalTime.of(9, 0), 70)
-                .add(LocalTime.of(12, 0), 80)
-                .add(LocalTime.of(15, 0), 70)
-                .add(LocalTime.of(18, 0), 30)
-                .add(LocalTime.of(21, 0), 10)
-                .add(LocalTime.of(0, 0), 10)
-                .build();        
-        this.mirek = LocalTimeCubicSpline.builder()
-                .add(LocalTime.of(3, 0), 490)
-                .add(LocalTime.of(6, 0), 400)
-                .add(LocalTime.of(9, 0), 300)
-                .add(LocalTime.of(12, 0), 153)
-                .add(LocalTime.of(15, 0), 300)
-                .add(LocalTime.of(18, 0), 400)
-                .add(LocalTime.of(21, 0), 490)
-                .add(LocalTime.of(0, 0), 490)
-                .build();        
     }
     public void start() throws IOException
     {
@@ -114,14 +93,17 @@ public class EventManager extends JavaLogging
             try
             {
                 JSONObject jo = (JSONObject) o;
-                logEvent(jo);
+                //logEvent(jo);
                 Resource res = hue.getResource((String) RID.queryFrom(o));
-                String type = jo.getString("type");
-                hueManager.event(res, type, jo);
+                if (res != null)
+                {
+                    String type = jo.getString("type");
+                    hueManager.event(res, type, jo);
+                }
             }
             catch (JSONPointerException ex)
             {
-                log(SEVERE, ex, "event: %s", ja);
+                //log(SEVERE, ex, "event: %s", ja);
             }
         }
     }
@@ -141,15 +123,6 @@ public class EventManager extends JavaLogging
         }
     }
 
-    private void refresh() throws IOException
-    {
-        WatchKey wk = watchService.poll();
-        if (wk != null)
-        {
-            info("refreshing config");
-            loadConfig();
-        }
-    }
     private void loadConfig() throws IOException
     {
         info("loading config");
@@ -226,14 +199,14 @@ public class EventManager extends JavaLogging
                 throw new IllegalArgumentException(type+" not motion");
         }
     }
-    private int getMirek()
+    private int getMirek(LocalTime time)
     {
-        double d = mirek.applyAsDouble(LocalTime.now());
+        double d = hueManager.lights.temperature.spline.applyAsDouble(time);
         return (max(153,min(500, (int) d)));
     }
-    private int getBrightness()
+    private int getBrightness(LocalTime time)
     {
-        double d = brightness.applyAsDouble(LocalTime.now());
+        double d = hueManager.lights.level.spline.applyAsDouble(time);
         return (max(0,min(100, (int) d)));
     }
     private abstract class Node
@@ -328,22 +301,27 @@ public class EventManager extends JavaLogging
         }
         private void fieldAdd(Node node, Node value) throws NoSuchFieldException
         {
-            Class<?> cls = value.getClass();
-            while (cls != null)
+            Class<? extends Node> nodeCls = node.getClass();
+            while (nodeCls != null)
             {
-                String name = cls.getSimpleName();
-                name = name.toLowerCase();
-                try
+                Class<?> valueCls = value.getClass();
+                while (valueCls != null)
                 {
-                    Field field = node.getClass().getDeclaredField(name+"s");
-                    List<Node> list = (List) field.get(this);
-                    list.add(value);
-                    return;
+                    String name = valueCls.getSimpleName();
+                    name = name.toLowerCase();
+                    try
+                    {
+                        Field field = nodeCls.getDeclaredField(name+"s");
+                        List<Node> list = (List) field.get(this);
+                        list.add(value);
+                        return;
+                    }
+                    catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException ex)
+                    {
+                    }
+                    valueCls = (Class<?>) valueCls.getSuperclass();
                 }
-                catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException ex)
-                {
-                }
-                cls = (Class<?>) cls.getSuperclass();
+                nodeCls = (Class<? extends Node>) nodeCls.getSuperclass();
             }
             throw new NoSuchFieldException(value+" not found");
         }
@@ -352,6 +330,7 @@ public class EventManager extends JavaLogging
     private class HueManager extends Node
     {
         protected Motions motions;
+        protected Lights lights;
         public HueManager(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -361,23 +340,21 @@ public class EventManager extends JavaLogging
         {
             switch (type)
             {
-                case "grouped_light":
-                    break;
-                case "light":
-                    break;
                 case "scene":
                     break;
                 case "smart_scene":
                     break;
                 case "temperature":
                     break;
+                case "grouped_light":
+                case "light":
                 case "grouped_light_level":
-                    break;
                 case "light_level":
+                    lights.event(res, type, jo);
                     break;
                 case "motion":
                 case "grouped_motion":
-                    motions.event(res, jo);
+                    motions.event(res, type, jo);
                     break;
                 default:
                     break;
@@ -385,13 +362,317 @@ public class EventManager extends JavaLogging
         }
         
     }
+    private class Lights extends Node
+    {
+        protected List<Sensor> sensors = new ArrayList<>();
+        protected List<Device> devices = new ArrayList<>();
+        protected Level level;
+        protected Temperature temperature;
+        
+        public Lights(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+        @Override
+        protected void init()
+        {
+            HueManager mgr = (HueManager) parent;
+            mgr.lights = this;
+            for (Sensor sensor : sensors)
+            {
+                sensorMap.put(sensor.name, sensor);
+                sensorLightMap.put(sensor.lightName, sensor);
+            }
+        }
+
+        private void event(Resource res, String type, JSONObject jo)
+        {
+            Sensor sensor = null;
+            String name = res.getName();
+            switch (type)
+            {
+                case "grouped_light":
+                case "light":
+                    sensor = sensorLightMap.get(name);
+                    if (sensor != null)
+                    {
+                        sensor.lightEvent(res, type, jo);
+                    }
+                    else
+                    {
+                        Device device = deviceMap.get(name);
+                        if (device != null)
+                        {
+                            device.event((boolean) ONON.queryFrom(jo));
+                        }
+                    }
+                    break;
+                case "grouped_light_level":
+                case "light_level":
+                    sensor = sensorMap.get(name);
+                    if (sensor != null)
+                    {
+                        sensor.sensorEvent(res, type, jo);
+                    }
+                    break;
+            }
+        }        
+    }
+    private class Circadian extends Node
+    {
+        protected List<Point> points = new ArrayList<>();
+        protected LocalTimeCubicSpline spline;
+        public Circadian(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        @Override
+        protected void init()
+        {
+            LocalTimeCubicSpline.Builder builder = LocalTimeCubicSpline.builder();
+            for (Point point : points)
+            {
+                builder.add(point.time, point.value);
+            }
+            spline = builder.build();
+        }
+        
+    }
+    private class Level extends Circadian
+    {
+        public Level(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+        
+    }
+    private class Temperature extends Circadian
+    {
+        public Temperature(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+        
+    }
+    private class Point extends Node
+    {
+        protected LocalTime time;
+        protected double value;
+        public Point(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        @Override
+        protected boolean assign(String name, Object value)
+        {
+            switch(name)
+            {
+                case "time":
+                    time = LocalTime.parse(value.toString());
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        
+    }
+    private class Sensor extends Node
+    {
+        protected String name;
+        protected String lightName;
+        protected int target;
+        private double onLevel = Double.NaN;
+        private double offLevel = Double.NaN;
+        private double brightness = Double.NaN;
+        private boolean on;
+        private LightLevelFitter dimmer;
+        private Preferences preferences;
+        private Stats stats;
+        public Sensor(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        @Override
+        protected void init()
+        {
+            preferences = Preferences.userNodeForPackage(Sensor.class);
+            int version = preferences.getInt(name+"_version", 0);
+            if (version != VERSION)
+            {
+                stats = new Stats(this);
+                dimmer = new LightLevelFitter(0.8, 68);
+            }
+            else
+            {
+                double a = preferences.getDouble(name+"_a", 0.8);
+                double b = preferences.getDouble(name+"_b", 68);
+                dimmer = new LightLevelFitter(a, b);
+            }
+        }
+        
+        private boolean isNeeded()
+        {
+            if (stats == null)
+            {
+                return Double.isNaN(offLevel) || target > offLevel;
+            }
+            else
+            {
+                return true;
+            }
+        }
+        private int getBrightness(int base)
+        {
+            return base;
+            /*
+            if (Double.isFinite(offLevel) && Double.isFinite(onLevel) && stats == null)
+            {
+                double trg = target*base/100;
+                double dimm = dimmer.getDimm(offLevel, trg);
+                return max(0,min(100, (int) dimm));
+            }
+            else
+            {
+                if (stats == null)
+                {
+                    return base;
+                }
+                else
+                {
+                    Random r = new Random();
+                    return r.nextInt(100);
+                }
+            }*/
+        }
+        
+        private void sensorEvent(Resource res, String type, JSONObject jo)
+        {
+            Object o = null;
+            switch (type)
+            {
+                case "grouped_light_level":
+                    o = GROUPED_LIGHT_LEVEL.queryFrom(jo);
+                    info("EVENT: %s %s %s", name, type, o);
+                    if (o != null)
+                    {
+                        if (on)
+                        {
+                            onLevel = ConvertUtility.convert(double.class, o);
+                        }
+                        else
+                        {
+                            offLevel = ConvertUtility.convert(double.class, o);
+                        }
+                        stats();
+                    }
+                    break;
+                case "light_level":
+                    o = LIGHT_LEVEL.queryFrom(jo);
+                    info("EVENT: %s %s %s", name, type, o);
+                    if (o != null)
+                    {
+                        if (on)
+                        {
+                            onLevel = ConvertUtility.convert(double.class, o);
+                        }
+                        else
+                        {
+                            offLevel = ConvertUtility.convert(double.class, o);
+                        }
+                        stats();
+                    }
+                    break;
+            }
+            info("%s", this);
+        }        
+        private void lightEvent(Resource res, String type, JSONObject jo)
+        {
+            long limit = System.currentTimeMillis()-1000000;
+            Object o = null;
+            switch (type)
+            {
+                case "grouped_light":
+                    o = ONON.queryFrom(jo);
+                    info("EVENT: %s %s on=%s", name, type, o);
+                    if (o != null)
+                    {
+                        on = ConvertUtility.convert(boolean.class, o);
+                    }
+                case "light":
+                    o = BRIGHTNESS.queryFrom(jo);
+                    info("EVENT: %s %s br=%s", name, type, o);
+                    if (o != null)
+                    {
+                        brightness = ConvertUtility.convert(double.class, o);
+                    }
+                    break;
+            }
+        }        
+
+        @Override
+        public String toString()
+        {
+            double[] params = dimmer.getParams();
+            return "Sensor{" + "name=" + lightName + ", on=" + onLevel + ", off=" + offLevel + ", brightness=" + brightness + ", a=" + params[0] + ", b="+params[1];
+        }
+
+        private void stats()
+        {
+            if (stats != null)
+            {
+                stats.event();
+            }
+        }
+    }
+    private class Stats
+    {
+        private Sensor sensor;
+        private long done;
+        private Boolean state;
+        public Stats(Sensor sensor)
+        {
+            this.sensor = sensor;
+            this.done = System.currentTimeMillis()+24*60*60*1000;
+        }
+        public void event()
+        {
+            if (
+                    Double.isFinite(sensor.brightness) && 
+                    Double.isFinite(sensor.offLevel) && 
+                    Double.isFinite(sensor.onLevel) &&
+                    sensor.onLevel > sensor.offLevel
+                    )
+            {
+                if (state != null)
+                {
+                    if (state != sensor.on)
+                    {
+                        sensor.dimmer.addPoints(sensor.offLevel, sensor.onLevel, sensor.brightness);
+                        info("add points to %s (%f, %f, %f);", sensor.name, sensor.offLevel, sensor.onLevel, sensor.brightness);
+                        if (System.currentTimeMillis() > done)
+                        {
+                            double cost = sensor.dimmer.fit();
+                            double[] params = sensor.dimmer.getParams();
+                            sensor.preferences.putDouble(sensor.name+"_a", params[0]);
+                            sensor.preferences.putDouble(sensor.name+"_b", params[1]);
+                            sensor.preferences.putInt(sensor.name+"_version", VERSION);
+                            info("FIT %s %f %f", sensor.name, params[0], params[1]);
+                            sensor.stats = null;
+                        }
+                    }
+                }
+                state = sensor.on;
+            }
+        }
+    }
     private class Motions extends Node
     {
         protected Enter enter;
         protected List<Motion> motions = new ArrayList<>();
         private Map<String,Motion> motionMap = new HashMap<>();
-        private Motion lastOn;
-        private long lastTime;
         public Motions(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -408,14 +689,13 @@ public class EventManager extends JavaLogging
             }
         }
 
-        private void event(Resource res, JSONObject jo)
+        private void event(Resource res, String type, JSONObject jo)
         {
             String name = res.getName();
+            boolean act = getMotion(jo);
             Motion motion = motionMap.get(name);
             if (motion != null)
             {
-                long now = System.currentTimeMillis();
-                boolean act = getMotion(jo);
                 int onCount = onCount();
                 motion.on(act);
                 info("motion %s %s %d", name, act, onCount);
@@ -426,20 +706,15 @@ public class EventManager extends JavaLogging
                         enter.event(act);
                     }
                     motion.event(act);
-                    lastOn = motion;
-                    lastTime = now;
                 }
                 else
                 {
-                    long lo = now - 10000;
-                    if (lo > lastTime)
+                    if (onCount == 1)
                     {
-                        lastOn = motion;
-                        lastTime = lo;
-                    }
-                    if (onCount == 1 && lastOn != null)
-                    {
-                        lastOn.exit(act);
+                        if (!motion.exit(act))
+                        {
+                            motion.event(act);
+                        }
                     }
                     else
                     {
@@ -500,12 +775,17 @@ public class EventManager extends JavaLogging
             }
         }
 
-        private void exit(boolean act)
+        private boolean exit(boolean act)
         {
             info("exit %s", name);
             if (exit != null)
             {
                 exit.event(act);
+                return true;
+            }
+            else
+            {
+                return false;
             }
         }
 
@@ -542,7 +822,7 @@ public class EventManager extends JavaLogging
     private class Device extends Node
     {
         protected String name;
-        protected Boolean action;
+        protected String action;
         protected long delay;
         protected String type;
         private ScheduledFuture<?> future;
@@ -552,45 +832,23 @@ public class EventManager extends JavaLogging
             super(json, parent);
         }
 
-        private void event(boolean act)
+        protected void event(boolean act)
         {
-            info("device %s", act);
-            if (action == null)
+            info("device %s %s", name, act);
+            if (action != null && "reverse".equals(action))
             {
-                if (act)
-                {
-                    on();
-                }
-                else
-                {
-                    off();
-                }
+                act = !act;
+            }
+            if (act)
+            {
+                on();
             }
             else
             {
-                if (action)
-                {
-                    on();
-                }
-                else
-                {
-                    off();
-                }
+                off();
             }
         }
 
-        @Override
-        protected boolean assign(String name, Object value)
-        {
-            switch (name)
-            {
-                case "action":
-                    action = (Boolean) value;
-                    return true;
-                default:
-                    return false;
-            }
-        }
         @Override
         protected void init()
         {
@@ -625,10 +883,8 @@ public class EventManager extends JavaLogging
 
         protected void on()
         {
-            if (cancel())
-            {
-                hue.update(on, ON);
-            }
+            cancel();
+            hue.update(on, ON);
         }
 
         protected void off()
@@ -639,9 +895,10 @@ public class EventManager extends JavaLogging
     }
     private class Light extends Device
     {
-        
         private Collection<Resource> brightness;
         private Collection<Resource> temperature;
+        private Sensor sensor;
+        private double dim = 1.0;
         public Light(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -650,9 +907,21 @@ public class EventManager extends JavaLogging
         @Override
         protected void on()
         {
-            hue.update(temperature, "/color_temperature/mirek:"+getMirek());
-            hue.update(brightness, "/dimming/brightness:"+getBrightness());
-            super.on();
+            boolean isNeeded = true;
+            LocalTime now = LocalTime.now();
+            int br = getBrightness(now);
+            ensureSensor();
+            if (sensor != null)
+            {
+                isNeeded = sensor.isNeeded();
+                br = sensor.getBrightness(br);
+            }
+            if (isNeeded)
+            {
+                hue.update(temperature, "/color_temperature/mirek:"+getMirek(now));
+                hue.update(brightness, "/dimming/brightness:"+br*dim);
+                super.on();
+            }
         }
 
         @Override
@@ -661,7 +930,87 @@ public class EventManager extends JavaLogging
             super.init();
             brightness = hue.getResource(name, "/dimming/brightness:80");
             temperature = hue.getResource(name, "/color_temperature/mirek:80");
+            deviceMap.put(name, this);
         }
-        
+        private Sensor ensureSensor()
+        {
+            if (sensor == null)
+            {
+                Lights lights = hueManager.lights;
+                if (lights != null)
+                {
+                    sensor = sensorLightMap.get(name);
+                }
+            }
+            return sensor;
+        }
+
+        private void dim(double value)
+        {
+            this.dim = value/100;
+            LocalTime now = LocalTime.now();
+            int br = getBrightness(now);
+            ensureSensor();
+            boolean isNeeded = false;
+            if (sensor != null)
+            {
+                isNeeded = sensor.isNeeded();
+                br = sensor.getBrightness(br);
+            }
+            if (isNeeded)
+            {
+                hue.update(brightness, "/dimming/brightness:"+br*dim);
+            }
+        }
+    }
+    private class Controller extends Device
+    {
+        protected String target;
+        protected double value;
+        public Controller(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        @Override
+        protected void event(boolean act)
+        {
+            switch (action)
+            {
+                case "dim":
+                    dim(act);
+                    break;
+                default:
+                    severe("Controller action %s not found!", action);
+                    break;
+            }
+        }
+
+        private void dim(boolean act)
+        {
+            Light light = (Light) deviceMap.get(target);
+            if (light == null)
+            {
+                severe("Light %s not found!", target);
+            }
+            else
+            {
+                if (act)
+                {
+                    light.dim(value);
+                }
+                else
+                {
+                    light.dim(100);
+                }
+            }
+        }
+
+        @Override
+        protected void init()
+        {
+            deviceMap.put(name, this);
+        }
+
     }
 }
