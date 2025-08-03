@@ -76,7 +76,23 @@ public class Resources
         
         public String getName()
         {
-            return query(NAME);
+            String name = query(NAME);
+            if (name != null)
+            {
+                return name;
+            }
+            else
+            {
+                Resource owner = getOwner();
+                if (owner != null)
+                {
+                    return owner.getName()+":";
+                }
+                else
+                {
+                    return ":";
+                }
+            }
         }
         
         public String getId()

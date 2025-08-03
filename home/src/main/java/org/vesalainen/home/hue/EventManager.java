@@ -19,22 +19,28 @@ package org.vesalainen.home.hue;
 import java.io.BufferedReader;
 import java.io.IOException;
 import static java.lang.Integer.*;
+import static java.lang.Math.abs;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
-import java.nio.file.FileSystem;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
-import static java.util.concurrent.TimeUnit.SECONDS;
-import java.util.prefs.Preferences;
+import java.util.concurrent.TimeUnit;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.logging.Level.SEVERE;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONPointer;
@@ -42,8 +48,11 @@ import org.json.JSONPointerException;
 import org.json.XML;
 import org.vesalainen.home.hue.Resources.Resource;
 import org.vesalainen.math.LocalTimeCubicSpline;
-import org.vesalainen.util.ConvertUtility;
-import org.vesalainen.util.concurrent.CachedScheduledThreadPool;
+import static org.vesalainen.math.UnitType.DURATION_MILLI_SECONDS;
+import org.vesalainen.net.dns.Message;
+import org.vesalainen.net.dns.ResourceRecord;
+import org.vesalainen.util.HashMapList;
+import org.vesalainen.util.MapList;
 import org.vesalainen.util.logging.JavaLogging;
 
 /**
@@ -65,27 +74,34 @@ public class EventManager extends JavaLogging
     private Hue hue;
     private String start;
     private Path path;
-    private CachedScheduledThreadPool pool = new CachedScheduledThreadPool();
+    private ScheduledExecutorService pool = Executors.newSingleThreadScheduledExecutor();
     private HueManager hueManager;
-    private Map<String,Device> deviceMap = new HashMap<>();
-    private Map<String,Sensor> sensorMap = new HashMap<>();
-    private Map<String,Sensor> sensorLightMap = new HashMap<>();
+    private Set<Node> nodeSet = new HashSet<>();
+    private MapList<String,Device> deviceMap = new HashMapList<>();
 
     public EventManager(Path path) throws IOException
     {
         super(EventManager.class);
         this.path = path;
-        FileSystem fileSystem = path.getFileSystem();
     }
     public void start() throws IOException
     {
         this.hue = new Hue("testApp");
         hue.readAllResources();
         loadConfig();
+        for (Node node : nodeSet)
+        {
+            node.postInit();
+        }
+        pool.scheduleWithFixedDelay(this::updateLights, 1, 10, TimeUnit.MINUTES);
         info("start reading events");
         hue.events(this::event);
     }
-    public void event(JSONObject ev)
+    private void event(JSONObject ev)
+    {
+        pool.execute(()->handleEvent(ev));
+    }
+    private void handleEvent(JSONObject ev)
     {
         JSONArray ja = ev.getJSONArray("data");
         for (Object o : ja)
@@ -98,13 +114,26 @@ public class EventManager extends JavaLogging
                 if (res != null)
                 {
                     String type = jo.getString("type");
+                    //info("vvvvvvvvvvvvvvvvvv EVENT vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv");
                     hueManager.event(res, type, jo);
+                    //info("^^^^^^^^^^^^^^^^^^ EVENT ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^");
                 }
             }
             catch (JSONPointerException ex)
             {
                 //log(SEVERE, ex, "event: %s", ja);
             }
+            catch (Exception ex)
+            {
+                log(SEVERE, ex, "event: %s", ja);
+            }
+        }
+    }
+    private void updateLights()
+    {
+        for (Light light : hueManager.lights.lights)
+        {
+            light.updateLight();
         }
     }
     private boolean addNode(String name, Object json)
@@ -199,14 +228,14 @@ public class EventManager extends JavaLogging
                 throw new IllegalArgumentException(type+" not motion");
         }
     }
-    private int getMirek(LocalTime time)
+    private int getMirek()
     {
-        double d = hueManager.lights.temperature.spline.applyAsDouble(time);
+        double d = hueManager.lights.temperature.spline.applyAsDouble(LocalTime.now());
         return (max(153,min(500, (int) d)));
     }
-    private int getBrightness(LocalTime time)
+    private int getBrightness()
     {
-        double d = hueManager.lights.level.spline.applyAsDouble(time);
+        double d = hueManager.lights.level.spline.applyAsDouble(LocalTime.now());
         return (max(0,min(100, (int) d)));
     }
     private abstract class Node
@@ -237,48 +266,57 @@ public class EventManager extends JavaLogging
             String pck = EventManager.class.getName();
             try
             {
-                String s = pck+"$"+name.substring(0, 1).toUpperCase()+name.substring(1);
-                Class<?> cls = Class.forName(s);
-                Constructor<?> cons = cls.getDeclaredConstructor(EventManager.class, JSONObject.class, Node.class);
-                Node node = (Node) cons.newInstance(EventManager.this, json, this);
-                JSON.walk(json, node::populate);
-                node.init();
-                try
+                if (json instanceof JSONObject)
                 {
-                    fieldAdd(this, node);
-                }
-                catch (NoSuchFieldException ex)
-                {
+                    String s = pck+"$"+name.substring(0, 1).toUpperCase()+name.substring(1);
+                    Class<?> cls = Class.forName(s);
+                    Constructor<?> cons = cls.getDeclaredConstructor(EventManager.class, JSONObject.class, Node.class);
+                    Node node = (Node) cons.newInstance(EventManager.this, json, this);
+                    nodeSet.add(node);
+                    JSON.walk(json, node::populate);
+                    node.init();
                     try
                     {
-                        fieldSet(this, name, node);
+                        fieldAdd(this, node);
                     }
-                    catch (NoSuchFieldException e)
+                    catch (NoSuchFieldException ex)
                     {
-                        if (!assign(name, node))
+                        try
                         {
-                            throw new IllegalArgumentException(name+" not assigned");
+                            fieldSet(this, name, node);
+                        }
+                        catch (NoSuchFieldException e)
+                        {
+                            if (!assign(name, node))
+                            {
+                                throw new IllegalArgumentException(name+" not assigned");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    if (!assign(name, json))
+                    {
+                        try
+                        {
+                            fieldSet(this, name, json);
+                        }
+                        catch (NoSuchFieldException ex1)
+                        {
+                            throw new RuntimeException(ex1);
                         }
                     }
                 }
             }
-            catch (ClassNotFoundException | InstantiationException | IllegalAccessException | InvocationTargetException | NoSuchMethodException | SecurityException ex)
+            catch (ClassNotFoundException | NoSuchMethodException | SecurityException | InstantiationException | IllegalAccessException | IllegalArgumentException | InvocationTargetException ex)
             {
-                if (!assign(name, json))
-                {
-                    try
-                    {
-                        fieldSet(this, name, json);
-                    }
-                    catch (NoSuchFieldException ex1)
-                    {
-                        throw new RuntimeException(ex1);
-                    }
-                }
+                throw new RuntimeException(ex);
             }
             return true;
         }
         protected void init(){}
+        protected void postInit(){}
         protected boolean assign(String name, Object value){return false;}
 
         private void fieldSet(Node node, String name, Object value) throws NoSuchFieldException
@@ -350,6 +388,8 @@ public class EventManager extends JavaLogging
                 case "light":
                 case "grouped_light_level":
                 case "light_level":
+                case "button":
+                case "relative_rotary":
                     lights.event(res, type, jo);
                     break;
                 case "motion":
@@ -364,10 +404,12 @@ public class EventManager extends JavaLogging
     }
     private class Lights extends Node
     {
-        protected List<Sensor> sensors = new ArrayList<>();
-        protected List<Device> devices = new ArrayList<>();
+        protected List<Light> lights = new ArrayList<>();
+        protected List<Mdns> mdnss = new ArrayList<>();
         protected Level level;
         protected Temperature temperature;
+        private Light lastOn;
+        private MDNS mdns;
         
         public Lights(JSONObject json, Node parent)
         {
@@ -378,45 +420,65 @@ public class EventManager extends JavaLogging
         {
             HueManager mgr = (HueManager) parent;
             mgr.lights = this;
-            for (Sensor sensor : sensors)
+            for (Light light : lights)
             {
-                sensorMap.put(sensor.name, sensor);
-                sensorLightMap.put(sensor.lightName, sensor);
+                deviceMap.add(light.name, light);
+                String sensor = light.sensor;
+                if (sensor != null)
+                {
+                    deviceMap.add(sensor, light);
+                }
+            }
+        }
+
+        @Override
+        protected void postInit()
+        {
+            if (!mdnss.isEmpty())
+            {
+                mdns = new MDNS();
+                mdns.startListening(this::handleMDns);
             }
         }
 
         private void event(Resource res, String type, JSONObject jo)
         {
-            Sensor sensor = null;
             String name = res.getName();
             switch (type)
             {
                 case "grouped_light":
                 case "light":
-                    sensor = sensorLightMap.get(name);
-                    if (sensor != null)
-                    {
-                        sensor.lightEvent(res, type, jo);
-                    }
-                    else
-                    {
-                        Device device = deviceMap.get(name);
-                        if (device != null)
-                        {
-                            device.event((boolean) ONON.queryFrom(jo));
-                        }
-                    }
-                    break;
                 case "grouped_light_level":
                 case "light_level":
-                    sensor = sensorMap.get(name);
-                    if (sensor != null)
+                case "button":
+                case "relative_rotary":
+                    for (Device device : deviceMap.get(name))
                     {
-                        sensor.sensorEvent(res, type, jo);
+                        device.event(res, type, jo);
                     }
                     break;
             }
         }        
+
+        private void handleMDns(Message message)
+        {
+            if (message.isAuthoritative() && !message.isQuery())
+            {
+                ResourceRecord[] answers = message.getAnswers();
+                if (answers != null)
+                {
+                    for (ResourceRecord rr : answers)
+                    {
+                        String name = rr.getName().toString();
+                        int ttl = rr.getTtl();
+                        for (Mdns mdns : mdnss)
+                        {
+                            mdns.handle(name, ttl);
+                        }
+                    }
+                }
+            }
+        }
     }
     private class Circadian extends Node
     {
@@ -478,19 +540,18 @@ public class EventManager extends JavaLogging
         }
         
     }
-    private class Sensor extends Node
+    private class Named extends Node
     {
         protected String name;
-        protected String lightName;
-        protected int target;
-        private double onLevel = Double.NaN;
-        private double offLevel = Double.NaN;
-        private double brightness = Double.NaN;
-        private boolean on;
-        private LightLevelFitter dimmer;
-        private Preferences preferences;
-        private Stats stats;
-        public Sensor(JSONObject json, Node parent)
+
+        public Named(String name)
+        {
+            super(null, null);
+            this.name = name;
+            init();
+        }
+        
+        public Named(JSONObject json, Node parent)
         {
             super(json, parent);
         }
@@ -498,175 +559,13 @@ public class EventManager extends JavaLogging
         @Override
         protected void init()
         {
-            preferences = Preferences.userNodeForPackage(Sensor.class);
-            int version = preferences.getInt(name+"_version", 0);
-            if (version != VERSION)
+            super.init();
+            if (!name.startsWith("_"))
             {
-                stats = new Stats(this);
-                dimmer = new LightLevelFitter(0.8, 68);
-            }
-            else
-            {
-                double a = preferences.getDouble(name+"_a", 0.8);
-                double b = preferences.getDouble(name+"_b", 68);
-                dimmer = new LightLevelFitter(a, b);
+                hue.checkName(name);
             }
         }
         
-        private boolean isNeeded()
-        {
-            if (stats == null)
-            {
-                return Double.isNaN(offLevel) || target > offLevel;
-            }
-            else
-            {
-                return true;
-            }
-        }
-        private int getBrightness(int base)
-        {
-            return base;
-            /*
-            if (Double.isFinite(offLevel) && Double.isFinite(onLevel) && stats == null)
-            {
-                double trg = target*base/100;
-                double dimm = dimmer.getDimm(offLevel, trg);
-                return max(0,min(100, (int) dimm));
-            }
-            else
-            {
-                if (stats == null)
-                {
-                    return base;
-                }
-                else
-                {
-                    Random r = new Random();
-                    return r.nextInt(100);
-                }
-            }*/
-        }
-        
-        private void sensorEvent(Resource res, String type, JSONObject jo)
-        {
-            Object o = null;
-            switch (type)
-            {
-                case "grouped_light_level":
-                    o = GROUPED_LIGHT_LEVEL.queryFrom(jo);
-                    info("EVENT: %s %s %s", name, type, o);
-                    if (o != null)
-                    {
-                        if (on)
-                        {
-                            onLevel = ConvertUtility.convert(double.class, o);
-                        }
-                        else
-                        {
-                            offLevel = ConvertUtility.convert(double.class, o);
-                        }
-                        stats();
-                    }
-                    break;
-                case "light_level":
-                    o = LIGHT_LEVEL.queryFrom(jo);
-                    info("EVENT: %s %s %s", name, type, o);
-                    if (o != null)
-                    {
-                        if (on)
-                        {
-                            onLevel = ConvertUtility.convert(double.class, o);
-                        }
-                        else
-                        {
-                            offLevel = ConvertUtility.convert(double.class, o);
-                        }
-                        stats();
-                    }
-                    break;
-            }
-            info("%s", this);
-        }        
-        private void lightEvent(Resource res, String type, JSONObject jo)
-        {
-            long limit = System.currentTimeMillis()-1000000;
-            Object o = null;
-            switch (type)
-            {
-                case "grouped_light":
-                    o = ONON.queryFrom(jo);
-                    info("EVENT: %s %s on=%s", name, type, o);
-                    if (o != null)
-                    {
-                        on = ConvertUtility.convert(boolean.class, o);
-                    }
-                case "light":
-                    o = BRIGHTNESS.queryFrom(jo);
-                    info("EVENT: %s %s br=%s", name, type, o);
-                    if (o != null)
-                    {
-                        brightness = ConvertUtility.convert(double.class, o);
-                    }
-                    break;
-            }
-        }        
-
-        @Override
-        public String toString()
-        {
-            double[] params = dimmer.getParams();
-            return "Sensor{" + "name=" + lightName + ", on=" + onLevel + ", off=" + offLevel + ", brightness=" + brightness + ", a=" + params[0] + ", b="+params[1];
-        }
-
-        private void stats()
-        {
-            if (stats != null)
-            {
-                stats.event();
-            }
-        }
-    }
-    private class Stats
-    {
-        private Sensor sensor;
-        private long done;
-        private Boolean state;
-        public Stats(Sensor sensor)
-        {
-            this.sensor = sensor;
-            this.done = System.currentTimeMillis()+24*60*60*1000;
-        }
-        public void event()
-        {
-            if (
-                    Double.isFinite(sensor.brightness) && 
-                    Double.isFinite(sensor.offLevel) && 
-                    Double.isFinite(sensor.onLevel) &&
-                    sensor.onLevel > sensor.offLevel
-                    )
-            {
-                if (state != null)
-                {
-                    if (state != sensor.on)
-                    {
-                        sensor.dimmer.addPoints(sensor.offLevel, sensor.onLevel, sensor.brightness);
-                        info("add points to %s (%f, %f, %f);", sensor.name, sensor.offLevel, sensor.onLevel, sensor.brightness);
-                        if (System.currentTimeMillis() > done)
-                        {
-                            double cost = sensor.dimmer.fit();
-                            double[] params = sensor.dimmer.getParams();
-                            sensor.preferences.putDouble(sensor.name+"_a", params[0]);
-                            sensor.preferences.putDouble(sensor.name+"_b", params[1]);
-                            sensor.preferences.putInt(sensor.name+"_version", VERSION);
-                            info("FIT %s %f %f", sensor.name, params[0], params[1]);
-                            sensor.stats = null;
-                        }
-                    }
-                }
-                state = sensor.on;
-            }
-        }
     }
     private class Motions extends Node
     {
@@ -681,6 +580,7 @@ public class EventManager extends JavaLogging
         @Override
         protected void init()
         {
+            super.init();
             HueManager mgr = (HueManager) parent;
             mgr.motions = this;
             for (Motion motion : motions)
@@ -697,6 +597,7 @@ public class EventManager extends JavaLogging
             if (motion != null)
             {
                 int onCount = onCount();
+                cancelExists();
                 motion.on(act);
                 info("motion %s %s %d", name, act, onCount);
                 if (act)
@@ -736,11 +637,19 @@ public class EventManager extends JavaLogging
             }
             return cnt;
         }
+
+        private void cancelExists()
+        {
+            for (Motion motion : motionMap.values())
+            {
+                motion.cancelExit();
+            }
+        }
         
     }
     private class Enter extends Node
     {
-        protected List<Device> devices = new ArrayList<>();
+        protected List<Action> actions = new ArrayList<>();
         public Enter(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -749,17 +658,16 @@ public class EventManager extends JavaLogging
         private void event(boolean act)
         {
             info("enter");
-            for (Device device : devices)
+            for (Action action : actions)
             {
-                device.event(act);
+                action.event(act);
             }
         }
         
     }
-    private class Motion extends Node
+    private class Motion extends Named
     {
-        protected String name;
-        protected List<Device> devices = new ArrayList<>();
+        protected List<Action> actions = new ArrayList<>();
         protected Exit exit;
         protected boolean on;
         public Motion(JSONObject json, Node parent)
@@ -769,9 +677,9 @@ public class EventManager extends JavaLogging
 
         private void event(boolean act)
         {
-            for (Device device : devices)
+            for (Action action : actions)
             {
-                device.event(act);
+                action.event(act);
             }
         }
 
@@ -792,18 +700,26 @@ public class EventManager extends JavaLogging
         @Override
         protected void init()
         {
-            hue.checkName(name);
+            super.init();
         }
 
         private void on(boolean act)
         {
             this.on = act;
         }
+
+        private void cancelExit()
+        {
+            if (exit != null)
+            {
+                exit.cancelExit();
+            }
+        }
         
     }
     private class Exit extends Node
     {
-        protected List<Device> devices = new ArrayList<>();
+        protected List<Action> actions = new ArrayList<>();
         public Exit(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -811,50 +727,385 @@ public class EventManager extends JavaLogging
 
         private void event(boolean act)
         {
-            info("exit");
-            for (Device device : devices)
+            for (Action action : actions)
             {
-                device.event(act);
+                action.event(act);
+            }
+        }
+
+        private void cancelExit()
+        {
+            for (Action action : actions)
+            {
+                action.cancel();
             }
         }
         
     }
-    private class Device extends Node
+    private class Device extends Named
     {
-        protected String name;
-        protected String action;
-        protected long delay;
+        private Collection<Resource> updOn;
         protected String type;
-        private ScheduledFuture<?> future;
-        private Collection<Resource> on;
+        protected boolean on;
+        protected boolean setOn;
         public Device(JSONObject json, Node parent)
         {
             super(json, parent);
         }
 
-        protected void event(boolean act)
+        public Device(String name)
         {
-            info("device %s %s", name, act);
-            if (action != null && "reverse".equals(action))
-            {
-                act = !act;
-            }
-            if (act)
-            {
-                on();
-            }
-            else
-            {
-                off();
-            }
+            super(name);
+        }
+
+        protected void event(Resource res, String type, JSONObject jo)
+        {
+        }
+        
+        protected void on()
+        {
+            hue.update(updOn, ON);
+            setOn = true;
+        }
+
+        protected void off()
+        {
+            hue.update(updOn, OFF);
+            setOn = false;
         }
 
         @Override
         protected void init()
         {
-            hue.checkName(name);
-            on = hue.getResource(name, "/on/on:true");
+            super.init();
+            updOn = hue.getResource(name, "/on/on:true");
         }
+   }
+    private enum DEEDS {SET_MIREK, SET_BRIGHTNESS, GOT_ON, GOT_BRIGHTNESS, GOT_ON_LEVEL, SET_OFF, SET_ON, GOT_OFF_LEVEL};
+    private class Light extends Device
+    {
+        private CheckList<DEEDS> check;
+        private Collection<Resource> updBrightness;
+        private Collection<Resource> updTemperature;
+        protected String sensor;
+        protected List<Action> actions = new ArrayList<>();
+        protected int target = Integer.MAX_VALUE;
+        private double brightness;
+        private double dim = 1.0;
+        private double fineAdj = 1.0;
+        private double adj = 1.0;
+        private int onLevel = Integer.MAX_VALUE;
+        private int offLevel;
+        private double setBrightness;
+        private long updated;
+        private boolean manualOn;
+        public Light(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        public Light(String name)
+        {
+            super(name);
+        }
+
+        protected void updateLight()
+        {
+            int trg = target();
+            config("UPD %s off=%d trg=%d", name, offLevel, trg);
+            hue.update(updTemperature, "/color_temperature/mirek:"+getMirek());
+            check.done(DEEDS.SET_MIREK);
+            if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
+            {
+                setBrightness = brightness();
+                hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
+                check.done(DEEDS.SET_BRIGHTNESS);
+            }
+            else
+            {
+                hue.update(updBrightness, "/dimming/brightness:"+0);
+                setBrightness = 0;
+                check.done(DEEDS.SET_BRIGHTNESS);
+            }
+            updated = System.currentTimeMillis();
+        }
+        private double brightness()
+        {
+            int trg = target();
+            int br = getBrightness();
+            br = max(0, min(100, (int) (br*adj*fineAdj)));
+            return br*dim;
+        }
+        private void toggle()
+        {
+            if (on)
+            {
+                off();
+            }
+            else
+            {
+                on();
+            }
+        }
+        private int target()
+        {
+            return (int) (dim*adj*target*getBrightness()/100);
+        }
+        @Override
+        protected void init()
+        {
+            super.init();
+            check = new CheckList<>(DEEDS.class, name);
+            updBrightness = hue.getResource(name, "/dimming/brightness:80");
+            BigDecimal br = (BigDecimal) hue.getValue(name, "/dimming/brightness:80");
+            if (br != null)
+            {
+                brightness = br.doubleValue();
+                check.done(DEEDS.GOT_BRIGHTNESS);
+            }
+            updTemperature = hue.getResource(name, "/color_temperature/mirek:80");
+            Boolean bb = (Boolean) hue.getValue(name, "/on/on:true");
+            if (bb != null)
+            {
+                on = bb.booleanValue();
+                check.done(DEEDS.GOT_ON);
+                Integer ll = (Integer) hue.getValue(name, "/light/light_level_report/light_level:0.0");
+                if (ll != null)
+                {
+                    if (on)
+                    {
+                        onLevel = ll.intValue();
+                        check.done(DEEDS.GOT_ON_LEVEL);
+                    }
+                    else
+                    {
+                        offLevel = ll.intValue();
+                        check.done(DEEDS.GOT_OFF_LEVEL);
+                    }
+                }
+                else
+                {
+                    ll = (Integer) hue.getValue(name, "/light/light_level:0.0");
+                    if (ll != null)
+                    {
+                        if (on)
+                        {
+                            onLevel = ll.intValue();
+                            check.done(DEEDS.GOT_ON_LEVEL);
+                        }
+                        else
+                        {
+                            offLevel = ll.intValue();
+                            check.done(DEEDS.GOT_OFF_LEVEL);
+                        }
+                    }
+                }
+            }
+        }
+
+        private void dim(double value)
+        {
+            dim = value/100;
+            updateLight();
+        }
+
+        @Override
+        protected void event(Resource res, String type, JSONObject jo)
+        {
+            super.event(res, type, jo);
+            switch (type)
+            {
+                case "light":
+                case "grouped_light":
+                    Boolean b = (Boolean) JSON.get(jo, "/on/on");
+                    if (b != null)
+                    {
+                        setOn(b);
+                        for (Action action : actions)
+                        {
+                            action.event(on);
+                        }
+                        if (on)
+                        {
+                            hueManager.lights.lastOn = this;
+                            info("last on %s", name);
+                        }
+                    }
+                    BigDecimal bd = (BigDecimal) JSON.get(jo, "/dimming/brightness");
+                    if (bd != null)
+                    {
+                        check.done(DEEDS.GOT_BRIGHTNESS);
+                        setBrightness(bd.doubleValue());
+                    }
+                    break;
+                case "grouped_light_level":
+                    Integer ii = (Integer) JSON.get(jo, "/light/light_level_report/light_level");
+                    updateLevel(ii);
+                    break;
+                case "light_level":
+                    ii = (Integer) JSON.get(jo, "/light/light_level");
+                    updateLevel(ii);
+                    break;
+            }
+        }
+        private void setBrightness(double v)
+        {
+            info("%s brightness=%f", name, v);
+            brightness = v;
+            if (on && abs(brightness - setBrightness) > 10)
+            {
+                if (System.currentTimeMillis() - updated < 3000)
+                {
+                    pool.execute(this::updateLight);
+                }
+                else
+                {
+                    if (check.isDone(DEEDS.GOT_BRIGHTNESS, DEEDS.SET_BRIGHTNESS))
+                    {
+                        if (brightness > 0 && setBrightness > 0)
+                        {
+                            adj = brightness / (setBrightness / adj);
+                            info("BRIGHTNESS %s %f <> %f adj=%f fine=%f", name, brightness, setBrightness, adj, fineAdj);
+                            setBrightness = brightness;
+                        }
+                        else
+                        {
+                            if (brightness > 0)
+                            {
+                                adj = 1;
+                            }
+                            else
+                            {
+                                adj = 0;
+                            }
+                            info("BRIGHTNESS %s %f <> %f adj=%f fine=%f", name, brightness, setBrightness, adj, fineAdj);
+                        }
+                        fineAdj = 1.0;
+                    }
+                }
+            }
+        }
+
+        private void fineAdjust()
+        {
+            if (check.ready())
+            {
+                int trg = target();
+                double bef = fineAdj;
+                if (onLevel < trg && brightness < 100)
+                {
+                    fineAdj = Double.min(2, fineAdj+0.1);
+                }
+                if (onLevel > trg && brightness > 0)
+                {
+                    fineAdj = Double.max(0, fineAdj-0.1);
+                }
+                updateLight();
+                config("FINE %s trg=%d on=%d %.1f -> %.1f", name, trg, onLevel, bef, fineAdj);
+            }
+        }
+
+        private void updateLevel(Integer level)
+        {
+            if (level != null && check.isDone(DEEDS.SET_ON))
+            {
+                if (on)
+                {
+                    check.done(DEEDS.GOT_ON_LEVEL);
+                    onLevel = level;
+                    info("%s onLevel=%d", name, level);
+                    fineAdjust();
+                }
+                else
+                {
+                    check.done(DEEDS.GOT_OFF_LEVEL);
+                    offLevel = level;
+                    info("%s ofLevel=%d", name, level);
+                    updateLight();
+                }
+            }
+        }
+
+        @Override
+        protected void off()
+        {
+            if (!manualOn)
+            {
+                info("%s set off", name);
+                super.off();
+                check.done(DEEDS.SET_OFF);
+            }
+            else
+            {
+                fine("%s not set off because manual control", name);
+            }
+        }
+
+        @Override
+        protected void on()
+        {
+            if (!on)
+            {
+                info("%s set on", name);
+                super.on();
+                pool.execute(this::updateLight);
+                check.done(DEEDS.SET_ON);
+            }
+            else
+            {
+                fine("%s not set on because already on", name);
+            }
+        }
+
+        protected void setOn(boolean b)
+        {
+            check.done(DEEDS.GOT_ON);
+            on = b;
+            info("%s on=%s", name, on);
+            if (check.isDone(DEEDS.SET_ON, DEEDS.SET_OFF))
+            {
+                if (manualOn)
+                {
+                    manualOn = on;
+                }
+                else
+                {
+                    if (setOn != on)
+                    {
+                        info("ON %s set=%s <> on=%s manual=%s", name, setOn, on, on);
+                        manualOn = on;
+                    }
+                }
+            }
+            if (on)
+            {
+                updated = System.currentTimeMillis();
+            }
+        }
+
+    }
+    private class Action<T extends Device> extends Named
+    {
+        protected T device;
+        private long delay;
+        private ScheduledFuture<?> future;
+        public Action(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+        protected void event(boolean act)
+        {
+            if (act)
+            {
+                cancel();
+                on();
+            }
+            else
+            {
+                schedule(this::off, delay);
+            }
+        }
+
         protected void schedule(Runnable act, long delay)
         {
             if (delay == 0)
@@ -863,7 +1114,7 @@ public class EventManager extends JavaLogging
             }
             else
             {
-                future = pool.schedule(act, delay, SECONDS);
+                future = pool.schedule(act, delay, MILLISECONDS);
             }
         }
         protected boolean cancel()
@@ -883,133 +1134,131 @@ public class EventManager extends JavaLogging
 
         protected void on()
         {
-            cancel();
-            hue.update(on, ON);
+            device.on();
         }
 
         protected void off()
         {
-            schedule(()->hue.update(on, OFF), delay);
-        }
-        
-    }
-    private class Light extends Device
-    {
-        private Collection<Resource> brightness;
-        private Collection<Resource> temperature;
-        private Sensor sensor;
-        private double dim = 1.0;
-        public Light(JSONObject json, Node parent)
-        {
-            super(json, parent);
+            device.off();
         }
 
         @Override
-        protected void on()
+        protected boolean assign(String name, Object value)
         {
-            boolean isNeeded = true;
-            LocalTime now = LocalTime.now();
-            int br = getBrightness(now);
-            ensureSensor();
-            if (sensor != null)
+            switch (name)
             {
-                isNeeded = sensor.isNeeded();
-                br = sensor.getBrightness(br);
-            }
-            if (isNeeded)
-            {
-                hue.update(temperature, "/color_temperature/mirek:"+getMirek(now));
-                hue.update(brightness, "/dimming/brightness:"+br*dim);
-                super.on();
+                case "delay":
+                    delay = (long) DURATION_MILLI_SECONDS.parse((CharSequence) value);
+                    return true;
+                default:
+                    return false;
             }
         }
 
         @Override
-        protected void init()
+        protected void postInit()
         {
-            super.init();
-            brightness = hue.getResource(name, "/dimming/brightness:80");
-            temperature = hue.getResource(name, "/color_temperature/mirek:80");
-            deviceMap.put(name, this);
-        }
-        private Sensor ensureSensor()
-        {
-            if (sensor == null)
+            if (!name.startsWith("_"))
             {
-                Lights lights = hueManager.lights;
-                if (lights != null)
+                device = (T) deviceMap.getSingle(name);
+                if (device == null)
                 {
-                    sensor = sensorLightMap.get(name);
+                    device = (T) newDevice(name);
+                    deviceMap.add(name, device);
                 }
             }
-            return sensor;
+        }
+        protected T newDevice(String name)
+        {
+            return (T) new Device(name);
         }
 
-        private void dim(double value)
-        {
-            this.dim = value/100;
-            LocalTime now = LocalTime.now();
-            int br = getBrightness(now);
-            ensureSensor();
-            boolean isNeeded = false;
-            if (sensor != null)
-            {
-                isNeeded = sensor.isNeeded();
-                br = sensor.getBrightness(br);
-            }
-            if (isNeeded)
-            {
-                hue.update(brightness, "/dimming/brightness:"+br*dim);
-            }
-        }
     }
-    private class Controller extends Device
+    private class LightAction extends Action<Light>
     {
-        protected String target;
-        protected double value;
-        public Controller(JSONObject json, Node parent)
+        
+        public LightAction(JSONObject json, Node parent)
         {
             super(json, parent);
         }
 
+        @Override
+        protected Light newDevice(String name)
+        {
+            return new Light(name);
+        }
+        
+        
+    }
+    private class Dim extends LightAction
+    {
+        protected int dim;
+        public Dim(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
         @Override
         protected void event(boolean act)
         {
-            switch (action)
+            if (act)
             {
-                case "dim":
-                    dim(act);
-                    break;
-                default:
-                    severe("Controller action %s not found!", action);
-                    break;
-            }
-        }
-
-        private void dim(boolean act)
-        {
-            Light light = (Light) deviceMap.get(target);
-            if (light == null)
-            {
-                severe("Light %s not found!", target);
+                device.dim(dim);
             }
             else
             {
-                if (act)
-                {
-                    light.dim(value);
-                }
-                else
-                {
-                    light.dim(100);
-                }
+                device.dim(100);
             }
         }
 
-        @Override
-        protected void init()
+    }
+    private class On extends LightAction
+    {
+        public On(JSONObject json, Node parent)
         {
-            deviceMap.put(name, this);
+            super(json, parent);
+        }
+        @Override
+        protected void event(boolean act)
+        {
+            device.on();
+        }
+    }
+    private class Off extends LightAction
+    {
+        public Off(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+        @Override
+        protected void event(boolean act)
+        {
+            device.off();
+        }
+    }
+    private class Mdns extends Node
+    {
+        protected String dn;
+        protected List<Action> actions = new ArrayList<>();
+        private boolean on;
+        public Mdns(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        private void handle(String name, int ttl)
+        {
+            if (dn.equals(name))
+            {
+                boolean act = ttl > 0;
+                if (act != on)
+                {
+                    for (Action action : actions)
+                    {
+                        action.event(act);
+                    }
+                    on = act;
+                }
+            }
         }
 
     }

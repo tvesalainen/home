@@ -26,22 +26,20 @@ import java.net.DatagramPacket;
 import java.net.InetAddress;
 import java.net.MulticastSocket;
 import java.net.URL;
-import static java.nio.charset.StandardCharsets.US_ASCII;
 import java.security.KeyManagementException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.logging.Level;
-import java.util.logging.Logger;
 import java.util.prefs.Preferences;
-import java.util.stream.Collectors;
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -120,12 +118,7 @@ public class Hue extends JavaLogging
         super(Hue.class);
         this.appName = appName;
         Preferences prefs = Preferences.userNodeForPackage(Hue.class);
-        bridgeIp = prefs.get("hue-bridge-ip", null);
-        if (bridgeIp == null)
-        {
-            bridgeIp = searchBridge();
-            prefs.put("hue-bridge-ip", bridgeIp);
-        }
+        bridgeIp = searchBridge();
         config("hue-bridge-ip %s", bridgeIp);
         appKey = prefs.get("hue-bridge-key", null);
         if (appKey == null)
@@ -157,6 +150,37 @@ public class Hue extends JavaLogging
         }
     }
 
+    public Object getValue(String name, String key)
+    {
+        String k = key;
+        int idx = k.indexOf(':');
+        if (idx != -1)
+        {
+            k = k.substring(0, idx);
+        }
+        for (Resource r : getResource(name, key))
+        {
+            try
+            {
+                HttpsURLConnection urlConnection = getAuthenticatedConnection("/clip/v2/resource/"+r.getType()+"/"+r.getId());
+                JSONObject res = (JSONObject) fetch(urlConnection);
+                JSONArray ja = res.getJSONArray("data");
+                for (Object o : ja)
+                {
+                    Object jo = JSON.get(o, k);
+                    if (jo != null)
+                    {
+                        return jo;
+                    }
+                }
+            }
+            catch (IOException ex)
+            {
+                throw new RuntimeException(ex);
+            }
+        }
+        return null;
+    }
     public void checkName(String name)
     {
         List<Resource> list = getResources(name);
@@ -290,59 +314,10 @@ public class Hue extends JavaLogging
 
     private String searchBridge() throws IOException
     {
-        InetAddress group = InetAddress.getByName("239.255.255.250");
-        try (MulticastSocket s = new MulticastSocket();)
-        {
-            s.joinGroup(group);
-            String search =
-                    "M-SEARCH * HTTP/1.1\r\n"+
-                    "HOST: 239.255.255.250:1900\r\n"+
-                    "MAN: ssdp:discover\r\n"+
-                    "MX: 4\r\n"+
-                    "ST: upnp:rootdevice\r\n"+
-                    "USER-AGENT:"+System.getProperty("os.name")+":"+System.getProperty("os.version");
-            DatagramPacket src = new DatagramPacket(search.getBytes(), search.length(),
-                             group, 1900);
-            byte[] buf = new byte[1000];
-            s.send(src);
-            while (true)
-            {
-                boolean ok = false;
-                DatagramPacket recv = new DatagramPacket(buf, buf.length);
-                s.receive(recv);
-                String msg = new String(recv.getData(), recv.getOffset(), recv.getLength());
-                System.err.println(msg);
-                String[] flds = msg.split("\r\n");
-                URL url = null;
-                for (String fld : flds)
-                {
-                    int idx = fld.indexOf(':');
-                    if (idx != -1)
-                    {
-                        String n = fld.substring(0, idx);
-                        String v = fld.substring(idx+1).trim();
-                        switch (n)
-                        {
-                            case "LOCATION":
-                                url = new URL(v);
-                                break;
-                            case "SERVER":
-                                if (v.startsWith("Hue"))
-                                {
-                                    ok = true;
-                                }
-                                break;
-                        }
-                    }
-                }
-                if (ok && url != null)
-                {
-                    return url.getHost();
-                }
-            }
-        }
+        Map<String, Object> dev = SSDP.searchRootDevice((d)->d.containsKey("hue-bridgeid"));
+        URL loc = (URL) dev.get("LOCATION");
+        return loc.getHost();
     }
-
     private Object fetch(HttpsURLConnection con) throws IOException
     {
         con.connect();

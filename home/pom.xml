@@ -81,6 +81,10 @@
             <artifactId>util</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.vesalainen</groupId>
+            <artifactId>dns-server</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
         </dependency>

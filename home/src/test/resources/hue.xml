@@ -21,38 +21,43 @@
             <point time="18:00" value="300" />
             <point time="21:00" value="500" />
         </temperature>
-        <sensor name="Living room group" lightName="Living room" target="20000"/>
-        <sensor name="Bedroom motion" lightName="Bedroom" target="20000"/>
-        <sensor name="Bathroom motion" lightName="Bathroom" target="20000"/>
-        <sensor name="Hallway motion" lightName="Hallway" target="20000"/>
-        <controller name="Library" action="dim" target="Living room" value="50"/>
+        <light name="Living room" target="20000" sensor="Living room group"/>
+        <light name="Library" target="20000" sensor="Living room motion 2">
+            <dim name="Living room" dim="50"/>
+        </light>
+        <light name="Bedroom" target="20000" sensor="Bedroom motion"/>
+        <light name="Hallway" target="20000" sensor="Hallway motion"/>
+        <light name="Bathroom" target="20000" sensor="Bathroom motion"/>
+        <mdns dn="_display._tcp.local">
+            <dim name="Living room" dim="50"/>
+        </mdns>
     </lights>
     <motions>
         <enter>
-            <device name="Sockets" />
-            <device name="Humifier" />
+            <on name="Sockets" />
+            <on name="Humifier" />
         </enter>
         <motion name="Living room group">
-            <light name="Living room" />
+            <action name="Living room" delay="1 m" />
             <exit>
-                <light name="Living room" action="reverse"/>
+                <on name="Living room"/>
             </exit>
         </motion>
         <motion name="Bedroom motion">
-            <light name="Bedroom" />
+            <action name="Bedroom" delay="1 m" />
             <exit>
-                <device name="Lights" />
+                <on name="Bedroom"/>
             </exit>
         </motion>
         <motion name="Bathroom motion">
-            <light name="Bathroom" />
+            <action name="Bathroom" delay="1 m" />
         </motion>
         <motion name="Hallway motion">
-            <light name="Hallway" />
+            <action name="Hallway" delay="1 m" />
             <exit>
-                <light name="Lights" />
-                <device name="Sockets" />
-                <device name="Humifier" />
+                <off name="Lights" delay="5 m" />
+                <off name="Sockets" delay="5 m" />
+                <off name="Humifier" delay="5 m" />
             </exit>
         </motion>
     </motions>
