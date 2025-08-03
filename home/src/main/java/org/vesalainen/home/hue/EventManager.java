@@ -16,6 +16,7 @@
  */
 package org.vesalainen.home.hue;
 
+import org.vesalainen.util.CheckList;
 import java.io.BufferedReader;
 import java.io.IOException;
 import static java.lang.Integer.*;
