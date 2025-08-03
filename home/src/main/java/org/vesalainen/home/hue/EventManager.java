@@ -856,7 +856,7 @@ public class EventManager extends JavaLogging
         protected void init()
         {
             super.init();
-            check = new CheckList<>(DEEDS.class, name);
+            check = new CheckList<>(DEEDS.class, ()->info("%s ready!", name));
             updBrightness = hue.getResource(name, "/dimming/brightness:80");
             BigDecimal br = (BigDecimal) hue.getValue(name, "/dimming/brightness:80");
             if (br != null)
