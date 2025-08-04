@@ -94,7 +94,7 @@ public class EventManager extends JavaLogging
         {
             node.postInit();
         }
-        pool.scheduleWithFixedDelay(this::updateLights, 1, 10, TimeUnit.MINUTES);
+        pool.scheduleWithFixedDelay(this::updateLights, 1, 5, TimeUnit.MINUTES);
         info("start reading events");
         hue.events(this::event);
     }
@@ -423,7 +423,10 @@ public class EventManager extends JavaLogging
             mgr.lights = this;
             for (Light light : lights)
             {
-                deviceMap.add(light.name, light);
+                for (String name : light.getNames())
+                {
+                    deviceMap.add(name, light);
+                }
                 String sensor = light.sensor;
                 if (sensor != null)
                 {
@@ -761,6 +764,17 @@ public class EventManager extends JavaLogging
 
         protected void event(Resource res, String type, JSONObject jo)
         {
+            switch (type)
+            {
+                case "light":
+                case "grouped_light":
+                    Boolean b = (Boolean) JSON.get(jo, "/on/on");
+                    if (b != null)
+                    {
+                        setOn(b);
+                    }
+                    break;
+            }
         }
         
         protected void on()
@@ -781,6 +795,11 @@ public class EventManager extends JavaLogging
             super.init();
             updOn = hue.getResource(name, "/on/on:true");
         }
+
+        protected void setOn(boolean b)
+        {
+            on = b;
+        }
    }
     private enum DEEDS {SET_MIREK, SET_BRIGHTNESS, GOT_ON, GOT_BRIGHTNESS, GOT_ON_LEVEL, SET_OFF, SET_ON, GOT_OFF_LEVEL};
     private class Light extends Device
@@ -800,6 +819,9 @@ public class EventManager extends JavaLogging
         private double setBrightness;
         private long updated;
         private boolean manualOn;
+        private int mirek;
+        private double colorX;
+        private double colorY;
         public Light(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -812,23 +834,39 @@ public class EventManager extends JavaLogging
 
         protected void updateLight()
         {
-            int trg = target();
-            config("UPD %s off=%d trg=%d", name, offLevel, trg);
-            hue.update(updTemperature, "/color_temperature/mirek:"+getMirek());
-            check.done(DEEDS.SET_MIREK);
-            if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
+            if (on)
             {
-                setBrightness = brightness();
-                hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
+                int trg = target();
+                config("UPD %s off=%d trg=%d", name, offLevel, trg);
+                int mir = getMirek();
+                if (mir != mirek)
+                {
+                    hue.update(updTemperature, "/color_temperature/mirek:"+mir);
+                }
+                else
+                {
+                    fine("%s mirek not set because it stays %d", name, mirek);
+                }
+                check.done(DEEDS.SET_MIREK);
+                if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
+                {
+                    setBrightness = brightness();
+                }
+                else
+                {
+                    setBrightness = 0;
+                }
+                if (!eq(setBrightness, brightness))
+                {
+                    hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
+                }
+                else
+                {
+                    fine("%s brightness not set because it stays %f", name, brightness);
+                }
                 check.done(DEEDS.SET_BRIGHTNESS);
+                updated = System.currentTimeMillis();
             }
-            else
-            {
-                hue.update(updBrightness, "/dimming/brightness:"+0);
-                setBrightness = 0;
-                check.done(DEEDS.SET_BRIGHTNESS);
-            }
-            updated = System.currentTimeMillis();
         }
         private double brightness()
         {
@@ -865,6 +903,14 @@ public class EventManager extends JavaLogging
                 check.done(DEEDS.GOT_BRIGHTNESS);
             }
             updTemperature = hue.getResource(name, "/color_temperature/mirek:80");
+            for (Resource r : updTemperature)
+            {
+                Integer m = (Integer) hue.getValue(r.getName(), "/color_temperature/mirek:80");
+                if (m != null)
+                {
+                    mirek = m;
+                }
+            }
             Boolean bb = (Boolean) hue.getValue(name, "/on/on:true");
             if (bb != null)
             {
@@ -913,10 +959,28 @@ public class EventManager extends JavaLogging
         @Override
         protected void event(Resource res, String type, JSONObject jo)
         {
-            super.event(res, type, jo);
             switch (type)
             {
                 case "light":
+                    Integer m = (Integer) JSON.get(jo, "/color_temperature/mirek");
+                    if (m != null)
+                    {
+                        mirek = m;
+                        fine("%s mirek=%d", name, mirek);
+                    }
+                    BigDecimal x = (BigDecimal) JSON.get(jo, "/color/xy/x");
+                    if (x != null)
+                    {
+                        colorX = x.doubleValue();
+                        fine("%s color-x=%f", name, x);
+                    }
+                    BigDecimal y = (BigDecimal) JSON.get(jo, "/color/xy/x");
+                    if (y != null)
+                    {
+                        colorY = y.doubleValue();
+                        fine("%s color-y=%f", name, y);
+                    }
+                    break;
                 case "grouped_light":
                     Boolean b = (Boolean) JSON.get(jo, "/on/on");
                     if (b != null)
@@ -1058,10 +1122,11 @@ public class EventManager extends JavaLogging
             }
         }
 
+        @Override
         protected void setOn(boolean b)
         {
+            super.setOn(b);
             check.done(DEEDS.GOT_ON);
-            on = b;
             info("%s on=%s", name, on);
             if (check.isDone(DEEDS.SET_ON, DEEDS.SET_OFF))
             {
@@ -1082,6 +1147,26 @@ public class EventManager extends JavaLogging
             {
                 updated = System.currentTimeMillis();
             }
+        }
+
+        private Collection<String> getNames()
+        {
+            Set<String> names = new HashSet<>();
+            names.add(name);
+            for (Resource res : updBrightness)
+            {
+                names.add(res.getName());
+            }
+            for (Resource res : updTemperature)
+            {
+                names.add(res.getName());
+            }
+            return names;
+        }
+
+        private boolean eq(double a, double b)
+        {
+            return abs(a-b) < 2;
         }
 
     }
