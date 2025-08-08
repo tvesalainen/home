@@ -837,7 +837,7 @@ public class EventManager extends JavaLogging
         private int offLevel;
         private double setBrightness;
         private long updated;
-        private boolean manualOn;
+        private boolean manual;
         private int mirek;
         private double colorX;
         private double colorY;
@@ -871,6 +871,7 @@ public class EventManager extends JavaLogging
             }
             else
             {
+                fine("%s brightness set to 0 because light not needed", name);
                 setBrightness = 0;
             }
             if (!eq(setBrightness, brightness))
@@ -1033,13 +1034,9 @@ public class EventManager extends JavaLogging
         {
             info("%s brightness=%f", name, v);
             brightness = v;
-            if (on && abs(brightness - setBrightness) > 10)
+            if (on && abs(brightness - setBrightness) > 5)
             {
-                if (System.currentTimeMillis() - updated < 3000)
-                {
-                    pool.execute(this::updateLight);
-                }
-                else
+                if (manual)
                 {
                     if (check.isDone(DEEDS.GOT_BRIGHTNESS, DEEDS.SET_BRIGHTNESS))
                     {
@@ -1063,6 +1060,10 @@ public class EventManager extends JavaLogging
                         }
                         fineAdj = 1.0;
                     }
+                }
+                else
+                {
+                    pool.execute(this::updateLight);
                 }
             }
         }
@@ -1110,7 +1111,7 @@ public class EventManager extends JavaLogging
         @Override
         protected void off()
         {
-            if (!manualOn)
+            if (!manual)
             {
                 info("%s set off", name);
                 super.off();
@@ -1145,16 +1146,22 @@ public class EventManager extends JavaLogging
             info("%s on=%s", name, on);
             if (check.isDone(DEEDS.SET_ON, DEEDS.SET_OFF))
             {
-                if (manualOn)
+                if (manual)
                 {
-                    manualOn = on;
+                    if (!on)
+                    {
+                        fine("ON %s set=%s <> on=%s manual=%s", name, setOn, on, on);
+                        adj = 1;
+                        setBrightness = 0;
+                    }
+                    manual = on;
                 }
                 else
                 {
                     if (setOn != on)
                     {
-                        info("ON %s set=%s <> on=%s manual=%s", name, setOn, on, on);
-                        manualOn = on;
+                        fine("ON %s set=%s <> on=%s manual=%s", name, setOn, on, on);
+                        manual = on;
                     }
                 }
             }
