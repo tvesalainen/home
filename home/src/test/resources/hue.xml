@@ -46,7 +46,8 @@
         <motion name="Bedroom motion">
             <action name="Bedroom" delay="1 m" />
             <exit>
-                <on name="Bedroom"/>
+                <off name="Lights"/>
+                <off name="Sockets" delay="30 m"/>
             </exit>
         </motion>
         <motion name="Bathroom motion">

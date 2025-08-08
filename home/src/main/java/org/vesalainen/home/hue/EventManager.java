@@ -779,13 +779,27 @@ public class EventManager extends JavaLogging
         
         protected void on()
         {
-            hue.update(updOn, ON);
+            if (!on)
+            {
+                hue.update(updOn, ON);
+            }
+            else
+            {
+                fine("%s not set on because already on", name);
+            }
             setOn = true;
         }
 
         protected void off()
         {
-            hue.update(updOn, OFF);
+            if (on)
+            {
+                hue.update(updOn, OFF);
+            }
+            else
+            {
+                fine("%s not set off because already off", name);
+            }
             setOn = false;
         }
 
@@ -794,6 +808,11 @@ public class EventManager extends JavaLogging
         {
             super.init();
             updOn = hue.getResource(name, "/on/on:true");
+            Boolean bb = (Boolean) hue.getValue(name, "/on/on:true");
+            if (bb != null)
+            {
+                on = bb.booleanValue();
+            }
         }
 
         protected void setOn(boolean b)
@@ -834,39 +853,36 @@ public class EventManager extends JavaLogging
 
         protected void updateLight()
         {
-            if (on)
+            int trg = target();
+            config("UPD %s off=%d trg=%d", name, offLevel, trg);
+            int mir = getMirek();
+            if (mir != mirek)
             {
-                int trg = target();
-                config("UPD %s off=%d trg=%d", name, offLevel, trg);
-                int mir = getMirek();
-                if (mir != mirek)
-                {
-                    hue.update(updTemperature, "/color_temperature/mirek:"+mir);
-                }
-                else
-                {
-                    fine("%s mirek not set because it stays %d", name, mirek);
-                }
-                check.done(DEEDS.SET_MIREK);
-                if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
-                {
-                    setBrightness = brightness();
-                }
-                else
-                {
-                    setBrightness = 0;
-                }
-                if (!eq(setBrightness, brightness))
-                {
-                    hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
-                }
-                else
-                {
-                    fine("%s brightness not set because it stays %f", name, brightness);
-                }
-                check.done(DEEDS.SET_BRIGHTNESS);
-                updated = System.currentTimeMillis();
+                hue.update(updTemperature, "/color_temperature/mirek:"+mir);
             }
+            else
+            {
+                fine("%s mirek not set because it stays %d", name, mirek);
+            }
+            check.done(DEEDS.SET_MIREK);
+            if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
+            {
+                setBrightness = brightness();
+            }
+            else
+            {
+                setBrightness = 0;
+            }
+            if (!eq(setBrightness, brightness))
+            {
+                hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
+            }
+            else
+            {
+                fine("%s brightness not set because it stays %f", name, brightness);
+            }
+            check.done(DEEDS.SET_BRIGHTNESS);
+            updated = System.currentTimeMillis();
         }
         private double brightness()
         {
@@ -1030,7 +1046,7 @@ public class EventManager extends JavaLogging
                         if (brightness > 0 && setBrightness > 0)
                         {
                             adj = brightness / (setBrightness / adj);
-                            info("BRIGHTNESS %s %f <> %f adj=%f fine=%f", name, brightness, setBrightness, adj, fineAdj);
+                            info("BRIGHTNESS %s %f <> %f adj=%f", name, brightness, setBrightness, adj);
                             setBrightness = brightness;
                         }
                         else
@@ -1043,7 +1059,7 @@ public class EventManager extends JavaLogging
                             {
                                 adj = 0;
                             }
-                            info("BRIGHTNESS %s %f <> %f adj=%f fine=%f", name, brightness, setBrightness, adj, fineAdj);
+                            info("BRIGHTNESS %s %f <> %f adj=%f", name, brightness, setBrightness, adj);
                         }
                         fineAdj = 1.0;
                     }
@@ -1113,7 +1129,6 @@ public class EventManager extends JavaLogging
             {
                 info("%s set on", name);
                 super.on();
-                pool.execute(this::updateLight);
                 check.done(DEEDS.SET_ON);
             }
             else
@@ -1254,10 +1269,11 @@ public class EventManager extends JavaLogging
                 }
             }
         }
-        protected T newDevice(String name)
+        protected Device newDevice(String name)
         {
-            return (T) new Device(name);
+            return new Device(name);
         }
+        
 
     }
     private class LightAction extends Action<Light>
@@ -1297,7 +1313,7 @@ public class EventManager extends JavaLogging
         }
 
     }
-    private class On extends LightAction
+    private class On extends Action<Device>
     {
         public On(JSONObject json, Node parent)
         {
@@ -1306,10 +1322,10 @@ public class EventManager extends JavaLogging
         @Override
         protected void event(boolean act)
         {
-            device.on();
+            super.event(true);
         }
     }
-    private class Off extends LightAction
+    private class Off extends Action<Device>
     {
         public Off(JSONObject json, Node parent)
         {
@@ -1318,7 +1334,7 @@ public class EventManager extends JavaLogging
         @Override
         protected void event(boolean act)
         {
-            device.off();
+            super.event(false);
         }
     }
     private class Mdns extends Node
