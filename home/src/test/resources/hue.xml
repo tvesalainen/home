@@ -26,7 +26,7 @@
             <dim name="Living room" dim="50"/>
         </light>
         <light name="Bedroom" target="20000" sensor="Bedroom motion"/>
-        <light name="Hallway" target="20000" sensor="Hallway motion"/>
+        <light name="Hallway" target="20000" min="5" max="90" sensor="Hallway motion"/>
         <light name="Bathroom" target="20000" sensor="Bathroom motion"/>
         <mdns dn="_display._tcp.local">
             <dim name="Living room" dim="50"/>
@@ -47,7 +47,7 @@
             <action name="Bedroom" delay="1 m" />
             <exit>
                 <off name="Lights"/>
-                <off name="Sockets" delay="30 m"/>
+                <off name="Sockets" delay="1 m"/>
             </exit>
         </motion>
         <motion name="Bathroom motion">
@@ -56,9 +56,9 @@
         <motion name="Hallway motion">
             <action name="Hallway" delay="1 m" />
             <exit>
-                <off name="Lights" delay="5 m" />
-                <off name="Sockets" delay="5 m" />
-                <off name="Humifier" delay="5 m" />
+                <off name="Lights" delay="1 m" />
+                <off name="Sockets" delay="1 m" />
+                <off name="Humifier" delay="1 m" />
             </exit>
         </motion>
     </motions>

@@ -829,9 +829,10 @@ public class EventManager extends JavaLogging
         protected String sensor;
         protected List<Action> actions = new ArrayList<>();
         protected int target = Integer.MAX_VALUE;
+        protected int min = 0;
+        protected int max = 100;
         private double brightness;
         private double dim = 1.0;
-        private double fineAdj = 1.0;
         private double adj = 1.0;
         private int onLevel = Integer.MAX_VALUE;
         private int offLevel;
@@ -841,6 +842,7 @@ public class EventManager extends JavaLogging
         private int mirek;
         private double colorX;
         private double colorY;
+        private Adjuster fineAdj = new Adjuster(0, 2);
         public Light(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -889,7 +891,7 @@ public class EventManager extends JavaLogging
         {
             int trg = target();
             int br = getBrightness();
-            br = max(0, min(100, (int) (br*adj*fineAdj)));
+            br = max(min, min(max, (int) (br*adj*fineAdj.getAdj())));
             return br*dim;
         }
         private void toggle()
@@ -1058,7 +1060,7 @@ public class EventManager extends JavaLogging
                             }
                             info("BRIGHTNESS %s %f <> %f adj=%f", name, brightness, setBrightness, adj);
                         }
-                        fineAdj = 1.0;
+                        fineAdj.reset();
                     }
                 }
                 else
@@ -1070,40 +1072,44 @@ public class EventManager extends JavaLogging
 
         private void fineAdjust()
         {
-            if (check.ready())
+            if (check.isDone(DEEDS.GOT_BRIGHTNESS, DEEDS.GOT_ON_LEVEL))
             {
                 int trg = target();
-                double bef = fineAdj;
-                if (onLevel < trg && brightness < 100)
+                double bef = fineAdj.getAdj();
+                if (    (onLevel < trg && brightness < max) ||
+                        (onLevel > trg && brightness > min))
                 {
-                    fineAdj = Double.min(2, fineAdj+0.1);
+                    fineAdj.adjust(onLevel, trg);
+                    updateLight();
+                    config("FINE %s trg=%d on=%d %f -> %f", name, trg, onLevel, bef, fineAdj.getAdj());
                 }
-                if (onLevel > trg && brightness > 0)
-                {
-                    fineAdj = Double.max(0, fineAdj-0.1);
-                }
-                updateLight();
-                config("FINE %s trg=%d on=%d %.1f -> %.1f", name, trg, onLevel, bef, fineAdj);
             }
         }
 
         private void updateLevel(Integer level)
         {
-            if (level != null && check.isDone(DEEDS.SET_ON))
+            if (level != null && check.isDone(DEEDS.SET_ON, DEEDS.GOT_BRIGHTNESS))
             {
+                int lv = level;
                 if (on)
                 {
                     check.done(DEEDS.GOT_ON_LEVEL);
-                    onLevel = level;
-                    info("%s onLevel=%d", name, level);
-                    fineAdjust();
+                    if (onLevel != lv)
+                    {
+                        onLevel = lv;
+                        info("%s onLevel=%d", name, lv);
+                        fineAdjust();
+                    }
                 }
-                else
+                if (check.isDone(DEEDS.GOT_BRIGHTNESS) && brightness < 10)
                 {
                     check.done(DEEDS.GOT_OFF_LEVEL);
-                    offLevel = level;
-                    info("%s ofLevel=%d", name, level);
-                    updateLight();
+                    if (offLevel != lv)
+                    {
+                        offLevel = lv;
+                        info("%s ofLevel=%d", name, lv);
+                        updateLight();
+                    }
                 }
             }
         }
@@ -1195,7 +1201,7 @@ public class EventManager extends JavaLogging
     private class Action<T extends Device> extends Named
     {
         protected T device;
-        private long delay;
+        protected long delay;
         private ScheduledFuture<?> future;
         public Action(JSONObject json, Node parent)
         {
@@ -1240,12 +1246,12 @@ public class EventManager extends JavaLogging
             }
         }
 
-        protected void on()
+        protected final void on()
         {
             device.on();
         }
 
-        protected void off()
+        protected final void off()
         {
             device.off();
         }
@@ -1329,7 +1335,12 @@ public class EventManager extends JavaLogging
         @Override
         protected void event(boolean act)
         {
-            super.event(true);
+            cancel();
+            on();
+            if (delay > 0)
+            {
+                schedule(super::off, delay);
+            }
         }
     }
     private class Off extends Action<Device>
@@ -1341,7 +1352,8 @@ public class EventManager extends JavaLogging
         @Override
         protected void event(boolean act)
         {
-            super.event(false);
+            cancel();
+            schedule(super::off, delay);
         }
     }
     private class Mdns extends Node
