@@ -37,12 +37,18 @@ public class Adjuster
     
     public void adjust(double value, double target)
     {
-        double delta = value-target;
-        double abs = abs(delta);
-        double sig = signum(delta);
-        double a = target/value;
-        adj = min(max, max(min, adj * a));
-        prev = target;
+        if (value > 0)
+        {
+            if (Double.isNaN(prev))
+            {
+                adj = min(max, max(min, target/value));
+            }
+            else
+            {
+                adj = min(max, max(min, (adj * target)/value));
+            }
+            prev = value;
+        }
     }
 
     public double getAdj()

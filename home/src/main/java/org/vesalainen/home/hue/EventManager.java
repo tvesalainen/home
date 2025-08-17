@@ -34,7 +34,6 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -134,7 +133,7 @@ public class EventManager extends JavaLogging
     {
         for (Light light : hueManager.lights.lights)
         {
-            light.updateLight();
+            light.updateLight(false);
         }
     }
     private boolean addNode(String name, Object json)
@@ -853,46 +852,41 @@ public class EventManager extends JavaLogging
             super(name);
         }
 
-        protected void updateLight()
+        protected void updateLight(boolean force)
         {
-            int trg = target();
-            config("UPD %s off=%d trg=%d", name, offLevel, trg);
-            int mir = getMirek();
-            if (mir != mirek)
+            if (on || force)
             {
-                hue.update(updTemperature, "/color_temperature/mirek:"+mir);
+                int trg = target();
+                config("UPD %s off=%d trg=%d", name, offLevel, trg);
+                int mir = getMirek();
+                if (mir != mirek)
+                {
+                    hue.update(updTemperature, "/color_temperature/mirek:"+mir);
+                }
+                else
+                {
+                    fine("%s mirek not set because it stays %d", name, mirek);
+                }
+                check.done(DEEDS.SET_MIREK);
+                if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
+                {
+                    updateBrightness(brightness());
+                }
+                else
+                {
+                    fine("%s brightness set to 0 because light not needed", name);
+                    updateBrightness(0);
+                }
+                check.done(DEEDS.SET_BRIGHTNESS);
+                updated = System.currentTimeMillis();
             }
-            else
-            {
-                fine("%s mirek not set because it stays %d", name, mirek);
-            }
-            check.done(DEEDS.SET_MIREK);
-            if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
-            {
-                setBrightness = brightness();
-            }
-            else
-            {
-                fine("%s brightness set to 0 because light not needed", name);
-                setBrightness = 0;
-            }
-            if (!eq(setBrightness, brightness))
-            {
-                hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
-            }
-            else
-            {
-                fine("%s brightness not set because it stays %f", name, brightness);
-            }
-            check.done(DEEDS.SET_BRIGHTNESS);
-            updated = System.currentTimeMillis();
         }
-        private double brightness()
+        private int brightness()
         {
             int trg = target();
             int br = getBrightness();
             br = max(min, min(max, (int) (br*adj*fineAdj.getAdj())));
-            return br*dim;
+            return (int) (br*dim);
         }
         private void toggle()
         {
@@ -971,8 +965,9 @@ public class EventManager extends JavaLogging
 
         private void dim(double value)
         {
+            info("dim %s %f", name, value);
             dim = value/100;
-            updateLight();
+            updateLight(true);
         }
 
         @Override
@@ -1065,7 +1060,7 @@ public class EventManager extends JavaLogging
                 }
                 else
                 {
-                    pool.execute(this::updateLight);
+                    pool.execute(()->updateLight(false));
                 }
             }
         }
@@ -1080,7 +1075,7 @@ public class EventManager extends JavaLogging
                         (onLevel > trg && brightness > min))
                 {
                     fineAdj.adjust(onLevel, trg);
-                    updateLight();
+                    updateLight(true);
                     config("FINE %s trg=%d on=%d %f -> %f", name, trg, onLevel, bef, fineAdj.getAdj());
                 }
             }
@@ -1107,8 +1102,8 @@ public class EventManager extends JavaLogging
                     if (offLevel != lv)
                     {
                         offLevel = lv;
-                        info("%s ofLevel=%d", name, lv);
-                        updateLight();
+                        info("%s offLevel=%d", name, lv);
+                        updateLight(false);
                     }
                 }
             }
@@ -1119,6 +1114,8 @@ public class EventManager extends JavaLogging
         {
             if (!manual)
             {
+                fine("%s brightness set to 0 because next set off", name);
+                updateBrightness(0);
                 info("%s set off", name);
                 super.off();
                 check.done(DEEDS.SET_OFF);
@@ -1136,6 +1133,7 @@ public class EventManager extends JavaLogging
             {
                 info("%s set on", name);
                 super.on();
+                updateLight(true);
                 check.done(DEEDS.SET_ON);
             }
             else
@@ -1195,6 +1193,19 @@ public class EventManager extends JavaLogging
         private boolean eq(double a, double b)
         {
             return abs(a-b) < 2;
+        }
+
+        private void updateBrightness(int br)
+        {
+            setBrightness = br;
+            if (!eq(setBrightness, brightness))
+            {
+                hue.update(updBrightness, "/dimming/brightness:"+setBrightness);
+            }
+            else
+            {
+                fine("%s brightness not set because it stays %f", name, brightness);
+            }
         }
 
     }
