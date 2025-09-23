@@ -24,6 +24,7 @@ import io.resourcepool.ssdp.model.SsdpService;
 import io.resourcepool.ssdp.model.SsdpServiceAnnouncement;
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.Executors;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import org.vesalainen.home.hue.Hue;
@@ -72,7 +73,7 @@ public class HomeT
     @Test
     public void test1() throws IOException
     {
-        Home home = new Home("testApp");
+        Home home = new Home("testApp", Executors.newSingleThreadScheduledExecutor());
         Hue hue = home.getHue();
         hue.readAllResources();
         List<Resource> rss = hue.getResources("library");

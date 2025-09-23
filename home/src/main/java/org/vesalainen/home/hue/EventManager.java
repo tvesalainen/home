@@ -86,7 +86,7 @@ public class EventManager extends JavaLogging
     }
     public void start() throws IOException
     {
-        this.hue = new Hue("testApp");
+        this.hue = new Hue("testApp", pool);
         hue.readAllResources();
         loadConfig();
         for (Node node : nodeSet)
@@ -854,32 +854,29 @@ public class EventManager extends JavaLogging
 
         protected void updateLight(boolean force)
         {
-            if (on || force)
+            int trg = target();
+            config("UPD %s off=%d trg=%d", name, offLevel, trg);
+            int mir = getMirek();
+            if (mir != mirek)
             {
-                int trg = target();
-                config("UPD %s off=%d trg=%d", name, offLevel, trg);
-                int mir = getMirek();
-                if (mir != mirek)
-                {
-                    hue.update(updTemperature, "/color_temperature/mirek:"+mir);
-                }
-                else
-                {
-                    fine("%s mirek not set because it stays %d", name, mirek);
-                }
-                check.done(DEEDS.SET_MIREK);
-                if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
-                {
-                    updateBrightness(brightness());
-                }
-                else
-                {
-                    fine("%s brightness set to 0 because light not needed", name);
-                    updateBrightness(0);
-                }
-                check.done(DEEDS.SET_BRIGHTNESS);
-                updated = System.currentTimeMillis();
+                hue.update(updTemperature, "/color_temperature/mirek:"+mir);
             }
+            else
+            {
+                fine("%s mirek not set because it stays %d", name, mirek);
+            }
+            check.done(DEEDS.SET_MIREK);
+            if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
+            {
+                updateBrightness(brightness());
+            }
+            else
+            {
+                fine("%s brightness set to 0 because light not needed", name);
+                updateBrightness(0);
+            }
+            check.done(DEEDS.SET_BRIGHTNESS);
+            updated = System.currentTimeMillis();
         }
         private int brightness()
         {

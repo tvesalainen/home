@@ -53,7 +53,7 @@ import org.vesalainen.util.logging.JavaLogging;
  *
  * @author Timo Vesalainen <timo.vesalainen@iki.fi>
  */
-public class StateManager extends JavaLogging
+@Deprecated public class StateManager extends JavaLogging
 {
     private static final JSONPointer RID = new JSONPointer("/owner/rid");
     private static JSONPointer MOTION = new JSONPointer("/motion/motion");
@@ -74,7 +74,7 @@ public class StateManager extends JavaLogging
         FileSystem fileSystem = path.getFileSystem();
         this.watchService = fileSystem.newWatchService();
         path.getParent().register(watchService, ENTRY_MODIFY);
-        this.hue = new Hue("testApp");
+        this.hue = new Hue("testApp", null);
     }
     public void start() throws IOException
     {

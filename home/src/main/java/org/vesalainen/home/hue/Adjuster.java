@@ -17,49 +17,69 @@
 package org.vesalainen.home.hue;
 
 import static java.lang.Math.*;
+import static java.util.concurrent.TimeUnit.*;
+import org.vesalainen.math.sliding.DoubleTimeoutSlidingAverage;
+import org.vesalainen.util.logging.JavaLogging;
 
 /**
  *
  * @author Timo Vesalainen <timo.vesalainen@iki.fi>
  */
-public class Adjuster
+public class Adjuster extends JavaLogging
 {
+    private static final long DURATION = MINUTES.toMillis(18);
+    private static final long DURATION2 = DURATION/2;
     private final double min;
     private final double max;
-    private double prev = Double.NaN;
+    private DoubleTimeoutSlidingAverage ave;
     private double adj = 1.0;
+    private long lastTime;
 
     public Adjuster(double min, double max)
     {
+        super(Adjuster.class);
         this.min = min;
         this.max = max;
+        this.ave = new DoubleTimeoutSlidingAverage(8, DURATION);
     }
     
     public void adjust(double value, double target)
     {
         if (value > 0)
         {
-            if (Double.isNaN(prev))
+            long now = System.currentTimeMillis();
+            long gap = now - lastTime;
+            lastTime = now;
+            if (ave.size() == 0)
             {
-                adj = min(max, max(min, target/value));
+                if (gap < DURATION)
+                {
+                    severe("gap %d < DURATION %d", gap, DURATION);
+                }
+                ave.accept(pow(adj, DURATION/gap), now - DURATION2);
+                fine("fill ave with %f", ave.last());
             }
-            else
-            {
-                adj = min(max, max(min, (adj * target)/value));
-            }
-            prev = value;
+            adj = min(max, max(min, adj*target/value));
+            ave.accept(adj);
         }
     }
 
     public double getAdj()
     {
-        return adj;
+        if (ave.size() > 0)
+        {
+            return ave.fast();
+        }
+        else
+        {
+            return adj;
+        }
     }
 
     public void reset()
     {
-        prev = Double.NaN;
         adj = 1.0;
+        ave.clear();
     }
     
 }

@@ -16,6 +16,7 @@
  */
 package org.vesalainen.home.hue;
 
+import static java.lang.Math.max;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -68,12 +69,31 @@ public class Resources
         private JSONObject json;
         private Set<String> keySet;
         private Set<String> valueSet;
+        private long last;
 
         public Resource(JSONObject json)
         {
             this.json = json;
         }
         
+        public long getDelay()
+        {
+            long now = System.currentTimeMillis();
+            String type = getType();
+            long d;
+            switch (type)
+            {
+                case "light":
+                    d = 100;
+                    break;
+                default:
+                    d = 1000;
+            }
+            long n = last + d;
+            long delay = max(0, n - now);
+            last = now + delay;
+            return delay;
+        }
         public String getName()
         {
             String name = query(NAME);

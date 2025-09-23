@@ -17,6 +17,7 @@
 package org.vesalainen.home;
 
 import java.io.IOException;
+import java.util.concurrent.ScheduledExecutorService;
 import org.vesalainen.home.hue.Hue;
 
 /**
@@ -29,10 +30,10 @@ public class Home
     private String appName;
     private Hue hue;
 
-    public Home(String appName) throws IOException
+    public Home(String appName, ScheduledExecutorService pool) throws IOException
     {
         this.appName = appName;
-        hue = new Hue(appName);
+        hue = new Hue(appName, pool);
     }
 
     public Hue getHue()

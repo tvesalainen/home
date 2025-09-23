@@ -35,6 +35,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -112,11 +114,13 @@ public class Hue extends JavaLogging
     private String bridgeIp;
     private String appKey;
     private Resources resources;
+    private final ScheduledExecutorService pool;
 
-    public Hue(String appName) throws IOException
+    public Hue(String appName, ScheduledExecutorService pool) throws IOException
     {
         super(Hue.class);
         this.appName = appName;
+        this.pool = pool;
         Preferences prefs = Preferences.userNodeForPackage(Hue.class);
         bridgeIp = searchBridge();
         config("hue-bridge-ip %s", bridgeIp);
@@ -455,6 +459,10 @@ public class Hue extends JavaLogging
         update(res, JSON.build(upd));
     }
     public void update(Resource res, JSONObject upd)
+    {
+        pool.schedule(()->upd(res, upd), res.getDelay(), TimeUnit.MILLISECONDS);
+    }
+    private void upd(Resource res, JSONObject upd)
     {
         try
         {
