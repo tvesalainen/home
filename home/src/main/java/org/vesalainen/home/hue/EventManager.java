@@ -27,8 +27,10 @@ import java.lang.reflect.InvocationTargetException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -46,11 +48,15 @@ import org.json.JSONObject;
 import org.json.JSONPointer;
 import org.json.JSONPointerException;
 import org.json.XML;
+import org.vesalainen.home.IndexedData;
+import org.vesalainen.home.entsoe.Optimizer;
+import org.vesalainen.home.entsoe.Prices;
 import org.vesalainen.home.hue.Resources.Resource;
 import org.vesalainen.math.LocalTimeCubicSpline;
 import static org.vesalainen.math.UnitType.DURATION_MILLI_SECONDS;
 import org.vesalainen.net.dns.Message;
 import org.vesalainen.net.dns.ResourceRecord;
+import org.vesalainen.util.ConvertUtility;
 import org.vesalainen.util.HashMapList;
 import org.vesalainen.util.MapList;
 import org.vesalainen.util.logging.JavaLogging;
@@ -238,6 +244,44 @@ public class EventManager extends JavaLogging
         double d = hueManager.lights.level.spline.applyAsDouble(LocalTime.now());
         return (max(0,min(100, (int) d)));
     }
+
+    private static class SimpleLever implements Lever
+    {
+        private Device device;
+        private boolean on;
+        public SimpleLever(Device device)
+        {
+            this.device = device;
+            this.on = device.on;
+        }
+
+        @Override
+        public boolean on()
+        {
+            on = true;
+            boolean allMatch = device.leverMap.values().stream().allMatch((l)->l.isOn());
+            if (allMatch)
+            {
+                device.on();
+                return true;
+            }
+            return false;
+        }
+
+        @Override
+        public void off()
+        {
+            on = false;
+            device.off();
+        }
+
+        @Override
+        public boolean isOn()
+        {
+            return on;
+        }
+        
+    }
     private abstract class Node
     {
         protected JSONObject json;
@@ -327,7 +371,7 @@ public class EventManager extends JavaLogging
                 try
                 {
                     Field field = cls.getDeclaredField(name);
-                    field.set(node, value);
+                    field.set(node, ConvertUtility.convert(field.getType(), value));
                     return;
                 }
                 catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException ex)
@@ -408,6 +452,7 @@ public class EventManager extends JavaLogging
         protected List<Mdns> mdnss = new ArrayList<>();
         protected Level level;
         protected Temperature temperature;
+        protected EnergyPrice energyPrice;
         private Light lastOn;
         private MDNS mdns;
         
@@ -751,6 +796,7 @@ public class EventManager extends JavaLogging
         protected String type;
         protected boolean on;
         protected boolean setOn;
+        private Map<String,Lever> leverMap = new HashMap<>();
         public Device(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -818,6 +864,16 @@ public class EventManager extends JavaLogging
         {
             on = b;
         }
+        protected Lever getLever(String name)
+        {
+            Lever lever = leverMap.get(name);
+            if (lever == null)
+            {
+                lever = new SimpleLever(this);
+                leverMap.put(name, lever);
+            }
+            return lever;
+        }
    }
     private enum DEEDS {SET_MIREK, SET_BRIGHTNESS, GOT_ON, GOT_BRIGHTNESS, GOT_ON_LEVEL, SET_OFF, SET_ON, GOT_OFF_LEVEL};
     private class Light extends Device
@@ -856,16 +912,6 @@ public class EventManager extends JavaLogging
         {
             int trg = target();
             config("UPD %s off=%d trg=%d", name, offLevel, trg);
-            int mir = getMirek();
-            if (mir != mirek)
-            {
-                hue.update(updTemperature, "/color_temperature/mirek:"+mir);
-            }
-            else
-            {
-                fine("%s mirek not set because it stays %d", name, mirek);
-            }
-            check.done(DEEDS.SET_MIREK);
             if (!check.isDone(DEEDS.SET_OFF) || offLevel < trg)
             {
                 updateBrightness(brightness());
@@ -876,6 +922,16 @@ public class EventManager extends JavaLogging
                 updateBrightness(0);
             }
             check.done(DEEDS.SET_BRIGHTNESS);
+            int mir = getMirek();
+            if (mir != mirek)
+            {
+                hue.update(updTemperature, "/color_temperature/mirek:"+mir);
+            }
+            else
+            {
+                fine("%s mirek not set because it stays %d", name, mirek);
+            }
+            check.done(DEEDS.SET_MIREK);
             updated = System.currentTimeMillis();
         }
         private int brightness()
@@ -1210,21 +1266,24 @@ public class EventManager extends JavaLogging
     {
         protected T device;
         protected long delay;
+        protected String condition;
+        private Lever lever;
         private ScheduledFuture<?> future;
         public Action(JSONObject json, Node parent)
         {
             super(json, parent);
         }
-        protected void event(boolean act)
+        protected boolean event(boolean act)
         {
             if (act)
             {
                 cancel();
-                on();
+                return on();
             }
             else
             {
                 schedule(this::off, delay);
+                return false;
             }
         }
 
@@ -1254,14 +1313,14 @@ public class EventManager extends JavaLogging
             }
         }
 
-        protected final void on()
+        protected final boolean on()
         {
-            device.on();
+            return lever.on();
         }
 
         protected final void off()
         {
-            device.off();
+            lever.off();
         }
 
         @Override
@@ -1288,6 +1347,7 @@ public class EventManager extends JavaLogging
                     device = (T) newDevice(name);
                     deviceMap.add(name, device);
                 }
+                lever = device.getLever(condition);
             }
         }
         protected Device newDevice(String name)
@@ -1321,7 +1381,7 @@ public class EventManager extends JavaLogging
             super(json, parent);
         }
         @Override
-        protected void event(boolean act)
+        protected boolean event(boolean act)
         {
             if (act)
             {
@@ -1331,6 +1391,7 @@ public class EventManager extends JavaLogging
             {
                 device.dim(100);
             }
+            return act;
         }
 
     }
@@ -1341,7 +1402,7 @@ public class EventManager extends JavaLogging
             super(json, parent);
         }
         @Override
-        protected void event(boolean act)
+        protected boolean event(boolean act)
         {
             cancel();
             on();
@@ -1349,6 +1410,7 @@ public class EventManager extends JavaLogging
             {
                 schedule(super::off, delay);
             }
+            return act;
         }
     }
     private class Off extends Action<Device>
@@ -1358,10 +1420,11 @@ public class EventManager extends JavaLogging
             super(json, parent);
         }
         @Override
-        protected void event(boolean act)
+        protected boolean event(boolean act)
         {
             cancel();
             schedule(super::off, delay);
+            return act;
         }
     }
     private class Mdns extends Node
@@ -1390,5 +1453,120 @@ public class EventManager extends JavaLogging
             }
         }
 
+    }
+    private class EnergyPrice extends Node
+    {
+        protected String securityToken;
+        protected String domain;
+        protected String place;
+        protected double maxRH;
+        protected double minRH;
+        protected double inTemp;
+        protected double vaporMass;
+        protected double vaporizingPower;
+        protected double volume;
+        protected List<Action> actions = new ArrayList<>();
+        private Optimizer optimizer;
+        private double costAll;
+        private double savedCost;
+        private boolean setOff;
+        private boolean wasOff;
+        private boolean[] offQs = new boolean[4];
+        private int offIndex;
+        private int offCount;
+        public EnergyPrice(JSONObject json, Node parent)
+        {
+            super(json, parent);
+        }
+
+        @Override
+        protected void postInit()
+        {
+            super.postInit();
+            optimizer = new Optimizer(securityToken, domain, place, maxRH, minRH, inTemp, vaporMass, vaporizingPower, volume);
+            optimizer.start();
+            IndexedData quarts = optimizer.getQuarts();
+            long delay = quarts.getMillis(quarts.getIndex()+1) - System.currentTimeMillis();
+            pool.scheduleAtFixedRate(this::action, delay, 900000, TimeUnit.MILLISECONDS);
+        }
+        private void action()
+        {
+            try
+            {
+                double currentPrice = optimizer.getPrice();
+                Optimizer.Candidate best = optimizer.best();
+                boolean act = best.isOn();
+                costAll += currentPrice;
+                if (!act)
+                {
+                    savedCost += currentPrice;
+                }
+                info("energy %f saved=%f%% %s", 
+                        currentPrice, 
+                        100*savedCost/costAll,
+                        act);
+                boolean setOff = false;
+                for (Action action : actions)
+                {
+                    boolean r = action.event(act);
+                    if (r != act)
+                    {
+                        fine("humidifier is externally put off");
+                        setOff = true;
+                    }
+                }
+                if (act)
+                {
+                    if (wasOff)
+                    {
+                        if (setOff)
+                        {
+                            offQs[offIndex % offQs.length] = true;
+                            fine("humidifier on saved %s", Arrays.toString(offQs));
+                        }
+                        else
+                        {
+                            wasOff = false;
+                            for (boolean b : offQs)
+                            {
+                                if (b)
+                                {
+                                    offCount++;
+                                }
+                            }
+                            fine("humidifier is externally put on saved %d", offCount);
+                        }
+                    }
+                    else
+                    {
+                        if (setOff)
+                        {
+                            wasOff = true;
+                            Arrays.fill(offQs, false);
+                            offQs[offIndex % offQs.length] = true;
+                            fine("humidifier init & on saved %s", Arrays.toString(offQs));
+                        }
+                    }
+                }
+                else
+                {
+                    if (offCount > 0)
+                    {
+                        fine("humidifier set from saved %d", offCount);
+                        for (Action action : actions)
+                        {
+                            action.event(true);
+                        }
+                        offCount--;
+                    }
+                }
+                offIndex++;
+                optimizer.commit(best);
+            }
+            catch (Throwable ex)
+            {
+                log(SEVERE, ex, "energy action failed");
+            }
+        }
     }
 }
