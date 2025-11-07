@@ -37,6 +37,7 @@ public class Humidifier
     private final double outTemp;
     private final double dewPoint;
     private final double aveRH;
+    private final double outRH;
     public Humidifier(
             double maxRH,
             double minRH,
@@ -46,7 +47,8 @@ public class Humidifier
             double volume,
             double airPressure,
             double outTemp, 
-            double dewPoint
+            double dewPoint,
+            double outRH
     )
     {
         this.maxRH = maxRH;
@@ -57,6 +59,7 @@ public class Humidifier
         this.airPressure = airPressure;
         this.outTemp = outTemp;
         this.dewPoint = dewPoint;
+        this.outRH = outRH;
         double maxDewPoint = Humidity.dewPoint(maxRH, inTemp);
         double minDewPoint = Humidity.dewPoint(minRH, inTemp);
         double maxVaporWeight = Humidity.actualMixingRatio(maxDewPoint, PRESSURE);
@@ -65,7 +68,10 @@ public class Humidifier
         this.circulation = 1000*humVaporMass/(SECONDS_IN_DAY*curVaporWeight);   // g/s
         this.vaporizingPower = vaporazingPower/SECONDS_IN_HOUR;         // g/s
     }
-
+    public double inRHUsingOutAir()
+    {
+        return Humidity.inRH(outTemp, inTemp, outRH, airPressure);
+    }
     public double relativeHumidityDeltaVaporizing(int seconds, double inRH)
     {
         double vaporized = vaporizingPower*seconds;

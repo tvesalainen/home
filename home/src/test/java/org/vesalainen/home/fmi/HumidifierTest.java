@@ -38,7 +38,7 @@ public class HumidifierTest
         double t = 22;
         double rh = 50;
         double dewPoint = Humidity.dewPoint(rh, t);
-        Humidifier h = new Humidifier(60, 40, 22, 10, 400, 76, 1014, t, dewPoint);
+        Humidifier h = new Humidifier(60, 40, 22, 10, 400, 76, 1014, t, dewPoint, rh);
         assertEquals(0.0, h.relativeHumidityDeltaCirculation(900, 50), 1e-4);
     }
     @Test
@@ -47,7 +47,7 @@ public class HumidifierTest
         double t = -22;
         double rh = 30;
         double dewPoint = Humidity.dewPoint(rh, t);
-        Humidifier h = new Humidifier(60, 40, 22, 10, 400, 76, 1014, t, dewPoint);
+        Humidifier h = new Humidifier(60, 40, 22, 10, 400, 76, 1014, t, dewPoint, rh);
         assertEquals(-6.7, h.relativeHumidityDeltaCirculation(900, 50), 1e-1);
     }
     @Test
@@ -56,7 +56,7 @@ public class HumidifierTest
         double t = -22;
         double rh = 30;
         double dewPoint = Humidity.dewPoint(rh, t);
-        Humidifier h = new Humidifier(60, 40, 22, 10, 400, 76, 1014, t, dewPoint);
+        Humidifier h = new Humidifier(60, 40, 22, 10, 400, 76, 1014, t, dewPoint, rh);
         assertEquals(6.6, h.relativeHumidityDeltaVaporizing(900, 50), 1e-1);
     }
     @Test
@@ -66,7 +66,7 @@ public class HumidifierTest
         double rh = 93;
         double dp = Humidity.dewPoint(rh, t);
         assertEquals(5.5, dp, 1e-1);
-        Humidifier h = new Humidifier(60, 40, 22, 16, 400, 85.4, 1000, t, dp);
+        Humidifier h = new Humidifier(60, 40, 22, 16, 400, 85.4, 1000, t, dp, rh);
         double irh = 42;
         for (int ii=0;ii<7*900;ii++)
         {

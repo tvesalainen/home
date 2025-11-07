@@ -40,18 +40,19 @@ public class HumidifierFactory
     }
     public Humidifier create(Double... p)
     {
-        if (p.length != 3)
+        if (p.length != 4)
         {
             throw new IllegalArgumentException("illegal count of parameters");
         }
-        return create(p[0], p[1], p[2]);
+        return create(p[0], p[1], p[2], p[3]);
     }
     public Humidifier create(
             double airPressure,
             double outTemp, 
-            double dewPoint
+            double dewPoint,
+            double rh
     )
     {
-        return new Humidifier(maxRH, minRH, inTemp, humVaporMass, vaporazingPower, volume, airPressure, outTemp, dewPoint);
+        return new Humidifier(maxRH, minRH, inTemp, humVaporMass, vaporazingPower, volume, airPressure, outTemp, dewPoint, rh);
     }
 }

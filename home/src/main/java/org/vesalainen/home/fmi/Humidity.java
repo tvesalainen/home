@@ -26,9 +26,9 @@ public class Humidity
 {
     private static final double b = 17.625;
     private static final double c = 243.04;
-    public static final double insideRelativeHumidity(double outTemp, double inTemp, double outRelativeHumidity, double airPressure)
+    public static final double inRH(double outTemp, double inTemp, double outRH, double airPressure)
     {
-        double outDP = dewPoint(outRelativeHumidity, outTemp);
+        double outDP = dewPoint(outRH, outTemp);
         double outMR = actualMixingRatio(outDP, airPressure);
         double inSVP = saturatedVaporPressure(inTemp, airPressure);
         return 100*outMR/inSVP;
@@ -42,7 +42,7 @@ public class Humidity
         double γ = γ(rh, t);
         return c*γ/(b-γ);
     }
-    public static double relativeHumidity(double dewPoint, double outTemp)
+    public static double rh(double dewPoint, double outTemp)
     {
         return actualVaporPressure(dewPoint)/saturatedVaporPressure(outTemp)*100;
     }

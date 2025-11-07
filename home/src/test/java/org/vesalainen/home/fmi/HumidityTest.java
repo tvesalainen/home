@@ -48,7 +48,7 @@ public class HumidityTest
         double rh = 50;
         double ot = 25;
         double dewPoint = Humidity.dewPoint(rh, ot);
-        assertEquals(50, Humidity.relativeHumidity(dewPoint, ot), 1e-2);
+        assertEquals(50, Humidity.rh(dewPoint, ot), 1e-2);
     }
     @Test
     public void testVaporDensity()
@@ -68,7 +68,7 @@ public class HumidityTest
         double rh = 50;
         double ot = 25;
         double airPressure = 1016;
-        assertEquals(60.3, Humidity.insideRelativeHumidity(ot, 22, rh, airPressure), 1.5);
+        assertEquals(60.3, Humidity.inRH(ot, 22, rh, airPressure), 1.5);
     }    
     @Test
     public void testAirWeight()

@@ -21,8 +21,11 @@ import java.util.AbstractCollection;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Predicate;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import org.vesalainen.util.ArrayIterator;
 
 /**
@@ -32,11 +35,12 @@ import org.vesalainen.util.ArrayIterator;
 public class BoundedPriorityQueue<T> extends AbstractCollection<T>
 {
     private final T[] arr;
-    private final int size;
+    private final int capacity;
     private final Comparator<? super T> comparator;
     private int head;
     private int tail;
     private ReentrantLock lock = new ReentrantLock();
+    private Condition condition = lock.newCondition();
 
     public BoundedPriorityQueue(int size)
     {
@@ -45,10 +49,30 @@ public class BoundedPriorityQueue<T> extends AbstractCollection<T>
     public BoundedPriorityQueue(int size, Comparator<? super T> comparator)
     {
         this.arr = (T[]) new Object[size];
-        this.size = size;
+        this.capacity = size;
         this.comparator = comparator;
     }
     
+    public void offerAndWait(T item)
+    {
+        lock.lock();
+        try
+        {
+            while (tail-head == capacity)
+            {
+                condition.await();
+            }
+            offer(item);
+        }
+        catch (InterruptedException ex)
+        {
+            throw new RuntimeException(ex);
+        }        
+        finally
+        {
+            lock.unlock();
+        }
+    }
     public void offer(T item)
     {
         lock.lock();
@@ -74,6 +98,10 @@ public class BoundedPriorityQueue<T> extends AbstractCollection<T>
     {
         return tail-head;
     }
+    public int free()
+    {
+        return capacity-(tail-head);
+    }
     public T poll()
     {
         lock.lock();
@@ -92,6 +120,7 @@ public class BoundedPriorityQueue<T> extends AbstractCollection<T>
         }
         finally
         {
+            condition.signalAll();
             lock.unlock();
         }
     }
@@ -124,11 +153,11 @@ public class BoundedPriorityQueue<T> extends AbstractCollection<T>
         }
         else
         {
-            if (idx < size)
+            if (idx < capacity)
             {
-                System.arraycopy(arr, idx, arr, idx+1, min(tail-idx, size-idx-1));
+                System.arraycopy(arr, idx, arr, idx+1, min(tail-idx, capacity-idx-1));
                 arr[idx] = item;
-                tail = min(size,tail+1);
+                tail = min(capacity,tail+1);
             }
         }
     }
@@ -204,6 +233,7 @@ public class BoundedPriorityQueue<T> extends AbstractCollection<T>
         }
         finally
         {
+            condition.signalAll();
             lock.unlock();
         }
     }

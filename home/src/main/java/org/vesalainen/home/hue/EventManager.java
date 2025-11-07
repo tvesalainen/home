@@ -1467,13 +1467,6 @@ public class EventManager extends JavaLogging
         protected double volume;
         protected List<Action> actions = new ArrayList<>();
         private Optimizer optimizer;
-        private double costAll;
-        private double savedCost;
-        private boolean setOff;
-        private boolean wasOff;
-        private boolean[] offQs = new boolean[4];
-        private int offIndex;
-        private int offCount;
         public EnergyPrice(JSONObject json, Node parent)
         {
             super(json, parent);
@@ -1484,9 +1477,9 @@ public class EventManager extends JavaLogging
         {
             super.postInit();
             optimizer = new Optimizer(securityToken, domain, place, maxRH, minRH, inTemp, vaporMass, vaporizingPower, volume);
-            optimizer.start();
+            optimizer.reStart();
             IndexedData quarts = optimizer.getQuarts();
-            long delay = quarts.getMillis(quarts.getIndex()+1) - System.currentTimeMillis();
+            long delay = quarts.getMillis(quarts.getIndex()+1) - System.currentTimeMillis() + 1;
             pool.scheduleAtFixedRate(this::action, delay, 900000, TimeUnit.MILLISECONDS);
         }
         private void action()
@@ -1496,14 +1489,8 @@ public class EventManager extends JavaLogging
                 double currentPrice = optimizer.getPrice();
                 Optimizer.Candidate best = optimizer.best();
                 boolean act = best.isOn();
-                costAll += currentPrice;
-                if (!act)
-                {
-                    savedCost += currentPrice;
-                }
-                info("energy %f saved=%f%% %s", 
+                info("energy %.2f€ %s", 
                         currentPrice, 
-                        100*savedCost/costAll,
                         act);
                 boolean setOff = false;
                 for (Action action : actions)
@@ -1515,53 +1502,14 @@ public class EventManager extends JavaLogging
                         setOff = true;
                     }
                 }
-                if (act)
+                if (setOff)
                 {
-                    if (wasOff)
-                    {
-                        if (setOff)
-                        {
-                            offQs[offIndex % offQs.length] = true;
-                            fine("humidifier on saved %s", Arrays.toString(offQs));
-                        }
-                        else
-                        {
-                            wasOff = false;
-                            for (boolean b : offQs)
-                            {
-                                if (b)
-                                {
-                                    offCount++;
-                                }
-                            }
-                            fine("humidifier is externally put on saved %d", offCount);
-                        }
-                    }
-                    else
-                    {
-                        if (setOff)
-                        {
-                            wasOff = true;
-                            Arrays.fill(offQs, false);
-                            offQs[offIndex % offQs.length] = true;
-                            fine("humidifier init & on saved %s", Arrays.toString(offQs));
-                        }
-                    }
+                    optimizer.commit(false);
                 }
                 else
                 {
-                    if (offCount > 0)
-                    {
-                        fine("humidifier set from saved %d", offCount);
-                        for (Action action : actions)
-                        {
-                            action.event(true);
-                        }
-                        offCount--;
-                    }
+                    optimizer.commit(act);
                 }
-                offIndex++;
-                optimizer.commit(best);
             }
             catch (Throwable ex)
             {

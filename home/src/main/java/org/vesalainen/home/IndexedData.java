@@ -93,15 +93,15 @@ public class IndexedData
         Data data = getData(parameter);
         return data.getAndWait(periodIndex);
     }
-    public <T> T get(String parameter)
+    public <T> T get(String parameter) throws OutOfDataException
     {
         return get(getIndex(), parameter);
     }
-    public <T> T get(TemporalAccessor accessor, String parameter)
+    public <T> T get(TemporalAccessor accessor, String parameter) throws OutOfDataException
     {
         return get(getIndex(accessor), parameter);
     }
-    public <T> T get(int periodIndex, String parameter)
+    public <T> T get(int periodIndex, String parameter) throws OutOfDataException
     {
         Data data = getData(parameter);
         return data.get(periodIndex);
@@ -159,7 +159,7 @@ public class IndexedData
 
     private interface Initializer
     {
-        void init(int index);
+        void init(int index) throws OutOfDataException;
         void waitAndInit(int index);
     }
     private Data getData(String parameter)
@@ -193,12 +193,12 @@ public class IndexedData
                 sync.waitUntil(()->periodIndex <= getMaxIndex());
                 return get(periodIndex);
             }
-            catch (InterruptedException ex)
+            catch (InterruptedException | OutOfDataException ex)
             {
                 throw new RuntimeException(ex);
             }
         }
-        public <T> T get(int periodIndex)
+        public <T> T get(int periodIndex) throws OutOfDataException
         {
             int index = periodIndex % capacity;
             if (indexes[index] != periodIndex)
@@ -207,7 +207,7 @@ public class IndexedData
             }
             if (periodIndex < minIndex || periodIndex > maxIndex)
             {
-                throw new IllegalArgumentException(periodIndex+" not in range ["+minIndex+", "+maxIndex+"]");
+                throw new OutOfDataException(periodIndex+" not in range ["+minIndex+", "+maxIndex+"]");
             }
             return (T) arr[index];
         }
@@ -224,7 +224,7 @@ public class IndexedData
             minIndex = min(minIndex, periodIndex);
             sync.update();
         }
-        private void callSuppliers(int periodIndex, boolean wait)
+        private void callSuppliers(int periodIndex, boolean wait) throws OutOfDataException
         {
             indexes[periodIndex % capacity] = periodIndex;
             for (Initializer initializer : initializers)
@@ -265,7 +265,7 @@ public class IndexedData
             this.parameters = parameters;
         }
         @Override
-        public void init(int periodIndex)
+        public void init(int periodIndex) throws OutOfDataException
         {
             Double[] p = new Double[parameters.length];
             int ii = 0;

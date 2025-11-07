@@ -35,7 +35,7 @@ public class IndexedDataTest
     }
 
     @Test
-    public void test1()
+    public void test1() throws OutOfDataException
     {
         IndexedData q = new IndexedData(Duration.ofMinutes(15), Duration.ofHours(1));
         q.addSupplier("z", this::a, "x", "y");

@@ -22,14 +22,18 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.PriorityQueue;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 import static java.util.logging.Level.SEVERE;
+import java.util.logging.Logger;
 import org.vesalainen.home.IndexedData;
 import org.vesalainen.home.BoundedPriorityQueue;
+import org.vesalainen.home.OutOfDataException;
 import org.vesalainen.home.Restarter;
 import org.vesalainen.home.fmi.Humidifier;
 import org.vesalainen.home.fmi.HumidifierFactory;
@@ -71,7 +75,7 @@ public class Optimizer extends JavaLogging
         this.minRH = minRH;
         this.quarts = new IndexedData(Duration.ofMinutes(15), ofDays);
         HumidifierFactory factory = new HumidifierFactory(maxRH, minRH, inTemp, vaporMass, vaporizingPower, volume);
-        quarts.addSupplier("humidifier", factory::create, "Pressure", "Temperature", "DewPoint");
+        quarts.addSupplier("humidifier", factory::create, "Pressure", "Temperature", "DewPoint", "Humidity");
         OpenData openData = new OpenData(pool, place, quarts);
         openData.startReadingAndWait();
 
@@ -79,17 +83,12 @@ public class Optimizer extends JavaLogging
         entsoe.startReadingAndWait();
         this.seconds = quarts.getSeconds();
         this.qSize = quarts.getCapacity();
-        queue.offer(new Candidate());
     }
-    public void start()
+    public void reStart()
     {
-        if (future == null)
+        if (future == null || future.isDone())
         {
             future = pool.submit(this::optimize);
-        }
-        else
-        {
-            throw new IllegalStateException();
         }
     }
     public void stop()
@@ -107,37 +106,91 @@ public class Optimizer extends JavaLogging
     {
         Candidate best = queue.peek();
         info("queue %s", queue);
-        return best;
+        if (best != null)
+        {
+            return best;
+        }
+        else
+        {
+            try
+            {
+                return new Candidate();
+            }
+            catch (OutOfDataException ex)
+            {
+                throw new RuntimeException(ex);
+            }
+        }
     }
-    public void commit(Candidate best)
+    public void commit(boolean isOn)
     {
         info("remove differing candidates");
         int index = quarts.getIndex();
-        boolean isOn = best.get(index);
-        pool.submit(()->queue.removeIf((c)->c.get(index)!=isOn));
+        Future<Boolean> f = pool.submit(()->queue.removeIf((c)->c.get(index)!=isOn));
+        pool.submit(new Runnable()
+        {
+            @Override
+            public void run()
+            {
+                try
+                {
+                    f.get();
+                }
+                catch (InterruptedException | ExecutionException ex)
+                {
+                    throw new RuntimeException(ex);
+                }
+                reStart();  
+            }
+        });
     }
     public void optimize()
     {
+        Candidate[] cands = new Candidate[2];
         try
         {
-            while (true)
+            while (queue.free() >= 2)
             {
-                Candidate c = queue.poll();
-                Candidate clone = c.clone();
-                if (c.burn(true))
+                Candidate polled = queue.poll();
+                if (polled == null)
                 {
-                    queue.offer(c);
+                    polled = new Candidate();
                 }
-                if (clone.burn(false))
+                cands[0] = polled.clone();
+                cands[1] = polled.clone();
+                for (int ii=0;ii<2;ii++)
                 {
-                    queue.offer(clone);
+                    try
+                    {
+                        if (!cands[ii].burn(ii%2==0))
+                        {
+                            cands[ii] = null;
+                        }
+                    }
+                    catch (OutOfDataException ex)
+                    {
+                        queue.offer(polled);
+                        return;
+                    }
+                }
+                for (Candidate c  : cands)
+                {
+                    if (c != null)
+                    {
+                        queue.offer(c);
+                    }
                 }
             }
+        }
+        catch (OutOfDataException ex)
+        {
+            fine("out of data");
         }
         catch (Throwable ex)
         {
             log(SEVERE, ex, "optimize() error");
         }
+        fine("optimizer stopping");
     }
     public IndexedData getQuarts()
     {
@@ -146,46 +199,52 @@ public class Optimizer extends JavaLogging
 
     public double getPrice()
     {
-        return quarts.get("price");
+        try
+        {
+            return quarts.get("price");
+        }
+        catch (OutOfDataException ex)
+        {
+            throw new RuntimeException(ex);
+        }
     }
     
     public class Candidate implements Comparable<Candidate>, Cloneable
     {
         private long ons = -1;
         private int qIndex;
-        private double relativeHumidity;
+        private float rh;
         private double cost;
-        private int reach0;
-        public Candidate()
+        public Candidate() throws OutOfDataException
         {
             this.qIndex = quarts.getIndex();
-            this.relativeHumidity = minRH;
+            Humidifier humidifier = quarts.get(qIndex, "humidifier");
+            this.rh = (float) humidifier.inRHUsingOutAir();
         }
-        public boolean burn(boolean on)
+        public boolean burn(boolean on) throws OutOfDataException
         {
             qIndex++;
-            Humidifier humidifier = quarts.getAndWait(qIndex, "humidifier");
-            double deltaCirc = humidifier.relativeHumidityDeltaCirculation(seconds, relativeHumidity);
-            double deltaVapor = humidifier.relativeHumidityDeltaVaporizing(seconds, relativeHumidity);
+            Humidifier humidifier = quarts.get(qIndex, "humidifier");
+            double deltaCirc = humidifier.relativeHumidityDeltaCirculation(seconds, rh);
+            double deltaVapor = humidifier.relativeHumidityDeltaVaporizing(seconds, rh);
             set(qIndex, on);
             if (on)
             {
-                cost += (double)quarts.getAndWait(qIndex, "price");
-                relativeHumidity += deltaCirc + deltaVapor;
-                if (relativeHumidity > maxRH)
+                cost += (double)quarts.get(qIndex, "price");
+                rh += deltaCirc + deltaVapor;
+                if (rh > maxRH)
                 {
                     return false;
                 }
             }
             else
             {
-                relativeHumidity += deltaCirc;
-                if (relativeHumidity < minRH)
+                rh += deltaCirc;
+                if (rh < minRH)
                 {
                     return false;
                 }
             }
-            reach0 = qIndex + (int)((relativeHumidity - minRH)/abs(deltaCirc)) + (int)max(0.0, ((maxRH - relativeHumidity)/(deltaVapor+deltaCirc))) + 2;
             return true;
         }
         @Override
@@ -205,13 +264,16 @@ public class Optimizer extends JavaLogging
         @Override
         public int compareTo(Candidate o)
         {
-            return (int) Math.signum(cost - o.cost);
+            if (qIndex == o.qIndex)
+            {
+                return (int) Math.signum(cost - o.cost);
+            }
+            else
+            {
+                return qIndex - o.qIndex;
+            }
         }
 
-        public boolean failsTo(Candidate o)
-        {
-            return o.qIndex > reach0 && o.cost < cost;
-        }
         public boolean isOn()
         {
             return get(quarts.getIndex());
@@ -243,7 +305,7 @@ public class Optimizer extends JavaLogging
                 }
             }
             int idx = qIndex-start;
-            return "Candidate{ " +sb+ " level=" + idx + ", cost=" + cost + ", rh=" + (int)relativeHumidity + '}';
+            return "Candidate{ " +sb+ " level=" + idx + ", cost=" + cost + ", rh=" + (int)rh + '}';
         }
 
         private void set(int index, boolean on)
@@ -254,11 +316,11 @@ public class Optimizer extends JavaLogging
             }
             if (on)
             {
-                ons |= 1<<(index%64);
+                ons |= 1L<<(index%64);
             }
             else
             {
-                ons &= ~(1<<(index%64));
+                ons &= ~(1L<<(index%64));
             }
         }
 
@@ -268,7 +330,7 @@ public class Optimizer extends JavaLogging
             {
                 throw new IllegalStateException("level > 64");
             }
-            return (ons & 1<<(index%64)) != 0;
+            return (ons & 1L<<(index%64)) != 0;
         }
     }
 }
